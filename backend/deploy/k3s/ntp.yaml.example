@@ -1,0 +1,86 @@
+# Internal NTP for your device fleet — only needed if your devices' network has no other
+# reachable NTP source before TLS (certs with a real notBefore fail validation until the clock
+# is set). If your devices can already reach a normal NTP server, skip this file entirely and
+# just point CONFIG_MD_SNTP_SERVER (firmware) at that server's IP.
+#
+# HOW: chrony serves the nodes' already-correct system clock to your device subnet on a
+# LoadBalancer VIP. It makes NO outbound NTP connections (no `server`/`pool`; runs with `-x`),
+# so this opens nothing new to the internet — it only redistributes time the cluster already has.
+#
+# Replace NTP_LB_IP (placeholder 203.0.113.12) and the image reference below with your own.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ntp-config
+  namespace: meeting-displays
+data:
+  # Authoritative chrony config (mounted over the image's baked copy). chrony has NO inline comments.
+  chrony.conf: |
+    port 12300
+    local stratum 10
+    allow all
+    driftfile /tmp/chrony.drift
+    pidfile /dev/null
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ntp
+  namespace: meeting-displays
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: ntp }
+  template:
+    metadata:
+      labels: { app: ntp }
+    spec:
+      securityContext:
+        # chronyd refuses to start unless euid==0 (its superuser check), so run as root — but with
+        # ALL capabilities dropped + no-priv-esc + read-only rootfs below, so it's tightly constrained
+        # (root uid, zero caps). `-x` means it never touches any clock, so no CAP_SYS_TIME is needed.
+        runAsUser: 0
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: chrony
+          image: REGISTRY_LB_IP:5000/<your-image-repo>/ntp:1.0.0   # build from deploy/k3s/ntp/Dockerfile
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: ntp, containerPort: 12300, protocol: UDP }
+          resources:
+            requests: { cpu: "10m", memory: "16Mi" }
+            limits:   { cpu: "100m", memory: "64Mi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            # chronyd must start as root (its superuser check) then drops to the non-root `chrony` user
+            # (built-in PRIVDROP) — that setgroups/setgid/setuid needs these 3 caps. Everything else dropped;
+            # `-x` means no CAP_SYS_TIME. Net: it ends up running unprivileged as `chrony`.
+            capabilities: { drop: ["ALL"], add: ["SETGID", "SETUID", "SETPCAP"] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }     # chrony drift/pid (chrony.conf points here)
+            - name: config
+              mountPath: /etc/chrony/chrony.conf
+              subPath: chrony.conf
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: config
+          configMap: { name: ntp-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ntp
+  namespace: meeting-displays
+  annotations:
+    metallb.io/loadBalancerIPs: "203.0.113.12"   # REPLACE with your own LB IP
+spec:
+  type: LoadBalancer
+  selector: { app: ntp }
+  ports:
+    - name: ntp
+      port: 123            # clients hit the VIP on the standard NTP port
+      targetPort: 12300    # forwarded to chrony's unprivileged port
+      protocol: UDP

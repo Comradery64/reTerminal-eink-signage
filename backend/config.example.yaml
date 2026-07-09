@@ -1,0 +1,57 @@
+# Broker configuration. In k3s this is mounted from a ConfigMap; secrets come from env / Secret.
+listen: ":8080"
+
+# How often the poller refreshes each room from the calendar provider.
+poll_interval: "2m"
+
+# Business-hours-aware wake cadence handed to devices via X-Next-Wake.
+wake:
+  business_hours_seconds: 600     # 10 min during the work day
+  off_hours_seconds: 3600         # 1 hr nights/weekends
+  business_start_hour: 7          # local tz
+  business_end_hour: 20
+  timezone: "America/New_York"
+
+render:
+  width: 800
+  height: 480
+  dither: true                    # Floyd–Steinberg onto the 6-color palette
+
+# We run Google Workspace. ("demo" is also valid — built-in fake schedule for local testing.)
+provider: "google"
+
+google:
+  # KEYLESS (Workload Identity Federation). Points at the external-account cred config that
+  # references the broker's projected k8s token — no service-account key, no impersonation.
+  # The service account reads each room via the freeBusy API after being granted freeBusyReader
+  # on that room's calendar (shared directly — see docs/DEPLOY.md). Empty → GOOGLE_APPLICATION_CREDENTIALS.
+  credentials_file: "/etc/gcp/cred-config.json"
+
+# Low-battery alert to the building manager (in-broker path). Complementary to the Prometheus
+# rule in deploy/k3s/alerts.yaml — run either or both.
+alerts:
+  low_battery_pct: 45        # fire at/below this; 45 (not 40) gives buffer since LiPo %→V is nonlinear
+  clear_pct: 55              # re-arm only after charging back above this (hysteresis)
+  min_renotify: "24h"        # if still low, remind at most once per day
+  webhook_url: "${ALERT_WEBHOOK_URL}"   # Slack incoming webhook; empty = log only
+
+# OTA firmware rollout (optional). Leave version empty to disable. When set, the broker advertises
+# the target build to devices, which self-update if their running build differs. With `dir` set,
+# the broker also serves the image at /firmware/<file>. Use signed images (Secure Boot V2).
+firmware:
+  version: ""                                  # e.g. "1.1.0"
+  url: ""                                      # e.g. "https://displays.example.internal/firmware/meeting_display-1.1.0.bin"
+  dir: ""                                      # e.g. "/etc/meeting-displays/firmware" to serve images locally
+
+# One entry per physical display. device_id is what the firmware sends in the URL.
+# room is the calendar resource (room mailbox / Google resource email).
+# token_sha256 is the SHA-256 (hex) of the device bearer token (never store the raw token).
+rooms:
+  - device_id: "rt-lobby-a1"
+    name: "Aspen"
+    room: "aspen@example.com"
+    token_sha256: "REPLACE_WITH_SHA256_OF_DEVICE_TOKEN"
+  - device_id: "rt-3f-birch"
+    name: "Birch"
+    room: "birch@example.com"
+    token_sha256: "REPLACE_WITH_SHA256_OF_DEVICE_TOKEN"

@@ -1,0 +1,83 @@
+# Fleet-grade alerting via Prometheus + Alertmanager (the k3s-native path).
+# The broker already exposes md_battery_percent / md_battery_millivolts on /metrics, scraped via
+# the pod annotations in broker.yaml. This adds the alert rule + a routing example.
+#
+# Assumes kube-prometheus-stack (Prometheus Operator). If you run plain Prometheus, copy the
+# `groups:` block into your rules file instead of using the PrometheusRule CRD.
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: meeting-displays-battery
+  namespace: meeting-displays
+  labels:
+    release: kube-prometheus-stack   # match your Prometheus ruleSelector
+spec:
+  groups:
+    - name: meeting-displays.battery
+      rules:
+        # 45% early-buffer threshold (matches the in-broker default). `for: 30m` debounces a
+        # single noisy reading; the LiPo %→V map is approximate, so batt_mv is carried in the
+        # annotation for a human sanity-check.
+        - alert: DisplayBatteryLow
+          expr: md_battery_percent < 45
+          for: 30m
+          labels:
+            severity: warning
+            team: facilities
+          annotations:
+            summary: "Low battery on display {{ $labels.device }} ({{ $value | printf \"%.0f\" }}%)"
+            description: >-
+              Display {{ $labels.device }} is at {{ $value | printf "%.0f" }}%
+              ({{ with printf `md_battery_millivolts{device="%s"}` $labels.device | query }}{{ . | first | value | printf "%.0f" }}{{ end }} mV).
+              Recharge/replace soon. Note: LiPo %→V is nonlinear, so verify against mV.
+        - alert: DisplayBatteryCritical
+          expr: md_battery_percent < 20
+          for: 10m
+          labels:
+            severity: critical
+            team: facilities
+          annotations:
+            summary: "CRITICAL battery on display {{ $labels.device }} ({{ $value | printf \"%.0f\" }}%)"
+            description: "Display {{ $labels.device }} will die imminently. Replace today."
+        # Catch units that stopped reporting (dead battery, crash, or off the network).
+        - alert: DisplayStale
+          expr: md_last_seen_seconds > 3600
+          for: 15m
+          labels:
+            severity: warning
+            team: facilities
+          annotations:
+            summary: "Display {{ $labels.device }} hasn't reported in {{ $value | printf \"%.0f\" }}s"
+            description: "No telemetry from {{ $labels.device }} — possible dead battery or network issue."
+---
+# Alertmanager routing example. Merge `route`/`receivers` into your existing Alertmanager config
+# (or AlertmanagerConfig CRD). Routes the facilities team's alerts to the building manager's channel.
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: facilities-routing
+  namespace: meeting-displays
+  labels:
+    release: kube-prometheus-stack
+spec:
+  route:
+    receiver: building-manager
+    groupBy: ["alertname"]
+    groupWait: 30s
+    groupInterval: 5m
+    repeatInterval: 24h          # don't nag; matches the broker's min_renotify
+    matchers:
+      - name: team
+        value: facilities
+  receivers:
+    - name: building-manager
+      slackConfigs:
+        - apiURL:
+            # Reference a Secret key holding the Slack webhook URL (do not inline it).
+            name: alertmanager-slack
+            key: webhook-url
+          channel: "#facilities-displays"
+          sendResolved: true
+          title: '{{ .CommonAnnotations.summary }}'
+          text: '{{ range .Alerts }}{{ .Annotations.description }}{{ "\n" }}{{ end }}'

@@ -1,0 +1,8 @@
+# buildx/buildkit config so the builder will push to an in-cluster registry over plain HTTP.
+# Only needed if you're using registry.yaml.example (no external registry). Replace the host:port
+# below with your own registry's LoadBalancer IP.
+#
+# Usage: docker buildx create --config backend/deploy/k3s/buildkitd.toml --use
+[registry."203.0.113.11:5000"]
+  http = true
+  insecure = true

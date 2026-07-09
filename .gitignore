@@ -1,0 +1,31 @@
+# Secrets & your own deployment specifics — never commit
+provisioning/
+*-tokens.txt
+google-sa.json
+*.pem
+secure_boot_signing_key*
+flash_encryption_key*
+secret*.yaml
+!backend/deploy/k3s/secret.example.yaml
+rooms.csv
+!tools/rooms.csv.example
+backend/deploy/k3s/*.yaml
+!backend/deploy/k3s/*.yaml.example
+!backend/deploy/k3s/alerts.yaml
+
+# Python virtualenv
+.venv/
+
+# Build artifacts
+backend/broker
+backend/preview-*.png
+firmware/build/
+firmware/sdkconfig
+firmware/sdkconfig.old
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# OS cruft
+.DS_Store

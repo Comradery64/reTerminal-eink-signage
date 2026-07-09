@@ -1,0 +1,27 @@
+# Broker TLS leaf, issued + auto-renewed from your internal CA via a cert-manager ClusterIssuer
+# (e.g. step-ca, or any ACME-compatible internal CA). Populates the `broker-tls` Secret that the
+# Ingress in broker.yaml terminates with.
+#
+# Devices pin your CA's ROOT in firmware/main/certs/broker_ca.pem; your ingress controller serves
+# leaf+intermediate, so the chain verifies. CN/SAN MUST equal CONFIG_MD_BROKER_HOST in the firmware.
+#
+# PREREQ for issuance: displays.example.internal must resolve to your ingress VIP (DNS A record) —
+# needed both for the http01 challenge AND for devices to reach the broker.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: broker-tls
+  namespace: meeting-displays
+spec:
+  secretName: broker-tls
+  duration: 2160h        # 90d
+  renewBefore: 720h      # 30d
+  privateKey:
+    algorithm: ECDSA
+    size: 256            # light for the ESP32-S3 handshake; use whatever your CA supports
+  commonName: displays.example.internal
+  dnsNames:
+    - displays.example.internal
+  issuerRef:
+    name: your-cluster-issuer   # REPLACE with your ClusterIssuer name
+    kind: ClusterIssuer

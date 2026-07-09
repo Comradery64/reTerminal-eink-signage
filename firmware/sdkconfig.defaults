@@ -1,0 +1,72 @@
+# ── Target / partitions ─────────────────────────────────────────────────────
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+# Board = reTerminal E1002 (ESP32-S3R8) with 32 MB flash — required by the dual-4MB-OTA layout
+# in partitions.csv (default 2 MB doesn't fit the ~8.5 MB table).
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="32MB"
+
+# ── PSRAM (framebuffer lives here) ──────────────────────────────────────────
+CONFIG_ESP32S3_SPIRAM_SUPPORT=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# ── Power: deep sleep tuning ────────────────────────────────────────────────
+CONFIG_PM_ENABLE=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+CONFIG_ESP_PHY_REDUCE_TX_POWER=y
+# Keep RTC slow mem powered (RTC_DATA_ATTR state) but everything else off in deep sleep.
+CONFIG_ESP_SLEEP_POWER_DOWN_FLASH=y
+CONFIG_ESP_SLEEP_RTC_BUS_ISO_WORKAROUND=y
+
+# ── mbedTLS: minimize handshake cost + enable session resumption ────────────
+# Client-side session tickets (RFC 5077) — the broker/Traefik issues a ticket we persist to NVS.
+CONFIG_MBEDTLS_CLIENT_SSL_SESSION_TICKETS=y
+CONFIG_MBEDTLS_SSL_SESSION_TICKETS=y
+# session_save/load serialization used by net_client for cross-deep-sleep resumption.
+CONFIG_MBEDTLS_SSL_CONTEXT_SERIALIZATION=y
+CONFIG_MBEDTLS_TLS_CLIENT_ONLY=y
+# TLS chosen: pin an internal CA embedded in the firmware (main/certs/broker_ca.pem), not the
+# public Mozilla bundle — so the bundle is disabled to save flash.
+# (Switch this back to =y + _DEFAULT_FULL=y and revert net_client/ota if you move to a public cert.)
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=n
+# Hardware-accelerated crypto (cuts handshake CPU time / radio-on time).
+CONFIG_MBEDTLS_HARDWARE_AES=y
+CONFIG_MBEDTLS_HARDWARE_MPI=y
+CONFIG_MBEDTLS_HARDWARE_SHA=y
+
+# ── Wi-Fi: faster connect, less RAM churn ───────────────────────────────────
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=y
+# WPA2/WPA3-Enterprise (EAP) support.
+CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT=y
+
+# ── SECURE BOOT V2 (RSA-3072) ───────────────────────────────────────────────
+# Enable for production builds. Generate the signing key ONCE and keep it offline:
+#   espsecure.py generate_signing_key --version 2 --scheme rsa3072 secure_boot_signing_key.pem
+# Uncomment to arm (irreversible once flashed — burns eFuses on first boot):
+# CONFIG_SECURE_BOOT=y
+# CONFIG_SECURE_BOOT_VERSION="2"
+# CONFIG_SECURE_BOOT_BUILD_SIGNED_BINARIES=y
+# CONFIG_SECURE_SIGNED_APPS_RSA_SCHEME=y
+# CONFIG_SECURE_BOOT_SIGNING_KEY="secure_boot_signing_key.pem"
+
+# ── FLASH ENCRYPTION (protects Wi-Fi creds + bearer token + NVS keys) ────────
+# Use RELEASE mode in production (development mode allows plaintext re-flash — do not ship it).
+# Uncomment to arm (irreversible — burns the flash-encryption eFuse key on first boot):
+# CONFIG_SECURE_FLASH_ENC_ENABLED=y
+# CONFIG_SECURE_FLASH_ENCRYPTION_MODE_RELEASE=y
+# NVS encryption (uses the nvs_keys partition; requires flash encryption).
+# CONFIG_NVS_ENCRYPTION=y
+
+# ── Stack sizes ─────────────────────────────────────────────────────────────
+# app_main calls mbedtls_net_connect → getaddrinfo → sys_thread_sem_get →
+# pthread_getspecific — that call chain alone needs ~8 KB; add TLS handshake
+# buffers and the default 3584 B overflows, corrupting pthread TLS state.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+
+# ── Logging: drop to WARN for production to shave boot time/flash ────────────
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y

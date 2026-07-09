@@ -1,0 +1,34 @@
+# Ready-to-run LOCAL config. No cloud/secrets needed:
+#   go build ./cmd/broker && ./broker -demo -config config.demo.yaml
+# Then, in another shell, with the matching demo token:
+#   TOKEN=demo-token ../tools/fake_device.sh display
+#   TOKEN=demo-token ../tools/fake_device.sh battery-demo
+#
+# The device token is the throwaway string "demo-token"; token_sha256 below is its SHA-256.
+# DO NOT use this config or token in production.
+listen: ":8080"
+poll_interval: "10s"
+wake:
+  business_hours_seconds: 600
+  off_hours_seconds: 3600
+  business_start_hour: 7
+  business_end_hour: 20
+  timezone: "America/New_York"
+render:
+  width: 800
+  height: 480
+  dither: true
+
+provider: "demo"            # built-in fake schedule; -demo flag also forces this
+
+alerts:
+  low_battery_pct: 45
+  clear_pct: 55
+  min_renotify: "24h"
+  webhook_url: ""           # empty = alerts only log (watch the broker output)
+
+rooms:
+  - device_id: "rt-lobby-a1"
+    name: "Aspen"
+    room: "aspen@example.com"
+    token_sha256: "7c43ef5ae21d43ce2743f770c68e24def1a43ee2f416d2438410c8af7af2ff2c"

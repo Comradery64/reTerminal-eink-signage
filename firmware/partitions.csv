@@ -1,0 +1,13 @@
+# reTerminal E1002 = ESP32-S3R8, 32 MB flash, 8 MB OPI PSRAM.
+# Name,        Type, SubType,  Offset,    Size,    Flags
+# OTA layout: dual 4 MB app slots + otadata, so the fleet is remotely updatable via esp_https_ota
+# (see firmware/main/ota.cpp). NVS holds encrypted provisioning secrets (Wi-Fi creds + token).
+nvs,            data, nvs,      0x9000,    0x6000,
+nvs_keys,       data, nvs_keys, 0xf000,    0x1000,  encrypted
+otadata,        data, ota,      0x10000,   0x2000,
+phy_init,       data, phy,      0x12000,   0x1000,
+ota_0,          app,  ota_0,    0x20000,   0x400000,
+ota_1,          app,  ota_1,    0x420000,  0x400000,
+# nvs_keys stores the XTS key for NVS encryption (itself protected by flash encryption).
+# Optional hardening: enable CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE and call
+# esp_ota_mark_app_valid_cancel_rollback() after a good wake, so a bad-but-bootable image reverts.

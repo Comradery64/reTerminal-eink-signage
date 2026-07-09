@@ -1,0 +1,6 @@
+# device_id,display_name,room_calendar_id
+# Example rooms — replace with your own. `room_calendar_id` is the room resource's calendar email
+# (Google Workspace) or whatever identifier your calendar provider uses.
+rt-example-a,Aspen,aspen@example.com
+rt-example-b,Birch,birch@example.com
+rt-example-c,Cedar,cedar@example.com

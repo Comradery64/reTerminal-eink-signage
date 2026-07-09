@@ -1,0 +1,25 @@
+# REQUIRED (in-cluster resolution): make CoreDNS resolve the broker host to your ingress VIP so that
+#   (a) cert-manager's ACME http01 self-check + CA validation can reach the challenge (incl. cert
+#       renewal), and (b) in-cluster clients can reach the broker by name.
+# This is k3s's supported `coredns-custom` mechanism (imported into the CoreDNS Corefile).
+#
+# ⚠️ Don't assume an external DNS record (e.g. on your router/firewall) makes this redundant — if your
+# k3s nodes' upstream DNS isn't that same resolver, CoreDNS forwarding your internal domain will
+# NXDOMAIN, breaking in-cluster resolution (and cert renewal). A device-facing DNS record on your
+# router AND this in-cluster CoreDNS entry usually both need to exist, since devices and in-cluster
+# pods resolve through different paths.
+#
+# Replace displays.example.internal and INGRESS_VIP with your own values.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns-custom
+  namespace: kube-system
+data:
+  displays.server: |
+    displays.example.internal {
+        hosts {
+            203.0.113.10 displays.example.internal
+            fallthrough
+        }
+    }

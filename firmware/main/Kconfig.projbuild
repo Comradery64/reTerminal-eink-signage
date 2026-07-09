@@ -1,0 +1,59 @@
+menu "Meeting Display Configuration"
+
+    config MD_BROKER_HOST
+        string "Broker hostname (TLS SNI / cert CN)"
+        default ""
+        help
+            Hostname of your broker deployment, e.g. "displays.example.internal". Must match the
+            CN/SAN of the broker's TLS certificate.
+
+    config MD_BROKER_PORT
+        int "Broker TLS port"
+        default 443
+
+    config MD_SNTP_SERVER
+        string "SNTP server (time sync before TLS)"
+        default ""
+        help
+            Clock source used to set the clock before the first HTTPS fetch. Certs with a real
+            notBefore fail mbedTLS validation until the device's clock is set, so the device
+            must reach an NTP server before its first fetch. Point this at whatever NTP server
+            (in-cluster, LAN gateway, or public) is reachable from your device's network.
+
+    menu "Pin map (reTerminal E1002 — verified against Seeed_GxEPD2 + ESPHome)"
+        config MD_PIN_EPD_SCLK
+            int "EPD SCLK"
+            default 7
+        config MD_PIN_EPD_MOSI
+            int "EPD MOSI"
+            default 9
+        config MD_PIN_EPD_CS
+            int "EPD CS"
+            default 10
+        config MD_PIN_EPD_DC
+            int "EPD DC"
+            default 11
+        config MD_PIN_EPD_RST
+            int "EPD RST"
+            default 12
+        config MD_PIN_EPD_BUSY
+            int "EPD BUSY"
+            default 13
+        config MD_PIN_WAKE_BTN_A
+            int "Wake button A — KEY0 (RTC GPIO, active-low)"
+            default 3
+        config MD_PIN_WAKE_BTN_B
+            int "Wake button B — KEY1 (RTC GPIO, active-low)"
+            default 4
+        config MD_PIN_WAKE_BTN_C
+            int "Wake button C — KEY2 (RTC GPIO, active-low)"
+            default 5
+        config MD_PIN_BATT_ADC
+            int "Battery sense ADC GPIO (VBAT_ADC)"
+            default 1
+        config MD_PIN_VBAT_EN
+            int "Battery divider enable GPIO (VBAT_EN, active-high)"
+            default 21
+    endmenu
+
+endmenu
