@@ -1,0 +1,12 @@
+title = "gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "known-safe fixtures, not real secrets"
+regexes = [
+  # sha256("demo-token") — the throwaway local-demo device token in backend/config.demo.yaml.
+  # Documented in that file as demo-only; never used against a real broker.
+  '''7c43ef5ae21d43ce2743f770c68e24def1a43ee2f416d2438410c8af7af2ff2c''',
+]
