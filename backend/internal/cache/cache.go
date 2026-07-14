@@ -14,6 +14,10 @@ type Entry struct {
 	ETag       string // quoted hex CRC32, ready for the ETag header
 	RenderedAt time.Time
 	Err        error // last poll error, if the room is currently failing
+
+	// LastForcedRefreshDay is the local "YYYY-MM-DD" this device last received its once-daily
+	// forced full repaint (see Store.ShouldForceFullRefresh). Empty if never forced.
+	LastForcedRefreshDay string
 }
 
 type Store struct {
@@ -42,4 +46,29 @@ func (s *Store) SetError(deviceID string, err error) {
 	e.Err = err
 	s.m[deviceID] = e
 	s.mu.Unlock()
+}
+
+// ShouldForceFullRefresh reports whether deviceID is due its once-daily forced full repaint —
+// true at most once per local calendar day, only during the hour named by forcedHour (0-23), in
+// loc. Idempotent: the first caller within that hour on a given day gets true and the device is
+// marked done for the day; every later call that same day/hour returns false.
+//
+// State resets on broker restart (in-memory only), which just means a device may get an extra
+// forced refresh sooner than scheduled — never a missed one, and never a correctness issue.
+func (s *Store) ShouldForceFullRefresh(deviceID string, now time.Time, forcedHour int, loc *time.Location) bool {
+	local := now.In(loc)
+	if local.Hour() != forcedHour {
+		return false
+	}
+	day := local.Format("2006-01-02")
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.m[deviceID]
+	if e.LastForcedRefreshDay == day {
+		return false
+	}
+	e.LastForcedRefreshDay = day
+	s.m[deviceID] = e
+	return true
 }

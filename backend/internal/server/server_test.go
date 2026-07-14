@@ -91,3 +91,38 @@ func TestDisplayServesOTAHeaders(t *testing.T) {
 		t.Fatalf("X-Fw-Target = %q, want 1.1.0", got)
 	}
 }
+
+// The once-daily forced-refresh override bypasses a matching If-None-Match exactly once per
+// device per day, so a room that never changes still gets a periodic real repaint (anti-ghosting).
+func TestDisplayForcedDailyRefresh(t *testing.T) {
+	s := testServer()
+	hour := time.Now().UTC().Hour()
+	s.cfg.Wake.ForcedRefreshHour = &hour
+	s.cache.Set("rt-1", cache.Entry{ETag: `"abc123"`})
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	get := func() *http.Response {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/display/rt-1", nil)
+		req.Header.Set("Authorization", "Bearer "+testToken)
+		req.Header.Set("If-None-Match", `"abc123"`)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET display: %v", err)
+		}
+		return resp
+	}
+
+	resp := get()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("first request in the forced hour: want 200, got %d", resp.StatusCode)
+	}
+	if resp.Header.Get("X-Forced-Refresh") != "1" {
+		t.Fatal("want X-Forced-Refresh: 1 on the forced repaint")
+	}
+
+	resp = get()
+	if resp.StatusCode != http.StatusNotModified {
+		t.Fatalf("second request same day: want 304 (already forced today), got %d", resp.StatusCode)
+	}
+}

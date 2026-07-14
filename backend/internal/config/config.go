@@ -46,6 +46,15 @@ type WakeConfig struct {
 	BusinessStartHour    int    `yaml:"business_start_hour"`
 	BusinessEndHour      int    `yaml:"business_end_hour"`
 	Timezone             string `yaml:"timezone"`
+
+	// ForcedRefreshHour: local hour (0-23) at which each device gets one unconditional full-panel
+	// repaint per day, even if the room schedule hasn't changed. E-ink retains a faint bias from
+	// sitting on the same image across many wake cycles; a periodic repaint (the panel already
+	// does a full, not partial, refresh — see firmware/main/epd_spectra6.cpp) clears it before it
+	// becomes visible. Pointer so "unset" (feature off) is distinguishable from hour 0 (midnight).
+	// Pick an off-hours value (outside BusinessStartHour..BusinessEndHour) so it doesn't cost
+	// energy during the work day. nil = disabled (default).
+	ForcedRefreshHour *int `yaml:"forced_refresh_hour"`
 }
 
 type RenderConfig struct {
@@ -151,6 +160,9 @@ func (c *Config) validate() error {
 	}
 	if _, err := time.LoadLocation(c.Wake.Timezone); err != nil {
 		return fmt.Errorf("invalid timezone %q: %w", c.Wake.Timezone, err)
+	}
+	if h := c.Wake.ForcedRefreshHour; h != nil && (*h < 0 || *h > 23) {
+		return fmt.Errorf("wake.forced_refresh_hour must be 0-23, got %d", *h)
 	}
 	return nil
 }

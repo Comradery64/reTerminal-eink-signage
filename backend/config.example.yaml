@@ -11,6 +11,12 @@ wake:
   business_start_hour: 7          # local tz
   business_end_hour: 20
   timezone: "America/New_York"
+  # Optional anti-ghosting lever: once per day, at this local hour, every device gets one
+  # unconditional full repaint even if the room schedule hasn't changed (the panel always does a
+  # full, not partial, refresh — see firmware/main/epd_spectra6.cpp). E-ink retains a faint image
+  # bias when it sits on the same frame for a long time; this clears it before it's visible. Pick
+  # an off-hours value (outside business_start_hour..business_end_hour). Omit to disable (default).
+  forced_refresh_hour: 3
 
 render:
   width: 800

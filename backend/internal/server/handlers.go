@@ -21,8 +21,9 @@ func (s *Server) handleDisplay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	now := time.Now()
 	entry, ok := s.cache.Get(device)
-	nextWake := s.cfg.NextWakeSeconds(time.Now())
+	nextWake := s.cfg.NextWakeSeconds(now)
 	if !ok || entry.ETag == "" {
 		// Poller hasn't produced a frame yet (cold start) or the room is failing.
 		setNoWake(w, nextWake)
@@ -36,10 +37,21 @@ func (s *Server) handleDisplay(w http.ResponseWriter, r *http.Request) {
 	setNoWake(w, entry.Payload.NextWakeS)
 	s.setFirmwareHeaders(w) // OTA advertisement (sent on both 200 and 304)
 
+	// Once-daily anti-ghosting override: force a real repaint even though content is unchanged,
+	// so a room that never changes doesn't sit on the same frame indefinitely. Opt-in via
+	// wake.forced_refresh_hour; disabled (nil) by default.
+	forceRefresh := false
+	if h := s.cfg.Wake.ForcedRefreshHour; h != nil {
+		forceRefresh = s.cache.ShouldForceFullRefresh(device, now, *h, s.cfg.Location())
+	}
+
 	// Conditional GET: identical content → 304, device skips the panel refresh entirely.
-	if match := r.Header.Get("If-None-Match"); match != "" && match == entry.ETag {
+	if match := r.Header.Get("If-None-Match"); !forceRefresh && match != "" && match == entry.ETag {
 		w.WriteHeader(http.StatusNotModified)
 		return
+	}
+	if forceRefresh {
+		w.Header().Set("X-Forced-Refresh", "1") // observability only; firmware ignores it
 	}
 
 	w.Header().Set("Content-Type", "application/octet-stream")

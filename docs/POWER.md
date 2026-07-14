@@ -54,3 +54,9 @@ doing, but secondary to not refreshing the panel.
 3. **Cut radio-on time** — BSSID/channel cache, TLS session tickets, HW crypto (implemented).
 4. **Coalesce "starting soon" transitions** — render the soon-state only once near the boundary
    rather than re-evaluating each wake (tune the 15-min threshold in `render.go`).
+5. **Anti-ghosting daily forced refresh (optional, costs energy)** — `wake.forced_refresh_hour`.
+   E-ink retains a faint image bias from sitting on the same frame across many wake cycles. This
+   spends one full-refresh cycle (the dominant per-wake energy cost — see above) per device per
+   day, during an off-hours hour you pick, purely to keep that bias from accumulating. It's the one
+   lever that deliberately works against the "don't refresh unchanged content" budget above, so
+   it's opt-in (nil/omitted = disabled) rather than on by default.

@@ -28,6 +28,9 @@ data:
       business_start_hour: 7
       business_end_hour: 20
       timezone: "America/New_York"   # REPLACE with your own IANA timezone
+      # Optional: once-daily forced full repaint (anti-ghosting) at this off-hours local hour.
+      # Omit to disable. See backend/config.example.yaml for the full explanation.
+      forced_refresh_hour: 3
     render:
       width: 800
       height: 480

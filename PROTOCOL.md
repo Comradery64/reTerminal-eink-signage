@@ -19,7 +19,10 @@ Request headers:
 
 Responses:
 - `200 OK` — body is an MDPF payload (header + compressed framebuffer). `ETag` header carries
-  the new content CRC32. The device must render this.
+  the new content CRC32. The device must render this. Sent even when content is unchanged once
+  per day, if the broker's optional `wake.forced_refresh_hour` anti-ghosting lever is enabled
+  (see `docs/POWER.md`) — that response also carries `X-Forced-Refresh: 1`, for observability
+  only; firmware doesn't need to look at it, since it already renders on any `200`.
 - `304 Not Modified` — schedule pixels are unchanged. **The device must NOT power the panel.**
   The `X-Next-Wake` header (seconds) still tells the device when to wake next.
 - `401 / 404` — bad token / unknown device.
