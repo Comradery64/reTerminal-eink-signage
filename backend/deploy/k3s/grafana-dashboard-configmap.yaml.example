@@ -1,0 +1,29 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Wraps grafana-dashboard.json (checked in next to this file) in a ConfigMap labeled
+# `grafana_dashboard: "1"`, the label kube-prometheus-stack's Grafana sidecar
+# (grafana.sidecar.dashboards.enabled) watches cluster-wide to auto-provision dashboards —
+# no manual import, no Grafana UI click-through.
+#
+# Don't hand-copy the JSON into `data:` below and let it drift — regenerate this file instead:
+#
+#   kubectl create configmap grafana-dashboard-meeting-displays \
+#     --from-file=meeting-displays-fleet.json=grafana-dashboard.json \
+#     --namespace meeting-displays --dry-run=client -o yaml \
+#   | { echo '# Generated from grafana-dashboard.json — see the comment at the top of'; \
+#       echo '# grafana-dashboard-configmap.yaml.example. Do not hand-edit.'; \
+#       cat -; } > grafana-dashboard-configmap.yaml.example
+#
+# then re-add the `labels: { grafana_dashboard: "1" }` line kubectl's dry-run output won't
+# include, if it's missing.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-meeting-displays
+  namespace: meeting-displays
+  labels:
+    grafana_dashboard: "1"
+data:
+  meeting-displays-fleet.json: |
+    # REPLACE: paste the full contents of grafana-dashboard.json here, indented 4 spaces
+    # (or run the kubectl command above, which does this for you).

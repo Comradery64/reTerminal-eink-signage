@@ -27,6 +27,7 @@ func testServer() *Server {
 		Rooms:    []config.Room{{DeviceID: "rt-1", Name: "Aspen", Room: "a@x", TokenSHA256: hex.EncodeToString(sum[:])}},
 	}
 	cfg.Wake.Timezone = "UTC"
+	cfg.Alerts = config.AlertConfig{LowBatteryPct: 45, ClearPct: 55, MinRenotify: 24 * time.Hour, StaleAfter: time.Hour}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	alerts := notify.NewManager("", 45, 55, 24*time.Hour, log)
 	return New(cfg, cache.New(), telemetry.New(), alerts, log)
@@ -124,5 +125,37 @@ func TestDisplayForcedDailyRefresh(t *testing.T) {
 	resp = get()
 	if resp.StatusCode != http.StatusNotModified {
 		t.Fatalf("second request same day: want 304 (already forced today), got %d", resp.StatusCode)
+	}
+}
+
+// /api/v1/status and /status are unauthenticated (cluster-internal trust boundary, same as
+// /metrics) and must reflect the same per-device classification.
+func TestStatusEndpoints(t *testing.T) {
+	s := testServer()
+	s.tlm.Ingest("rt-1", telemetry.Report{BatteryPct: 20}, time.Now())
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	jsonResp, err := http.Get(srv.URL + "/api/v1/status")
+	if err != nil || jsonResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/v1/status: err=%v code=%v", err, jsonResp.StatusCode)
+	}
+	body, _ := io.ReadAll(jsonResp.Body)
+	if !strings.Contains(string(body), `"status":"low_battery"`) {
+		t.Errorf("status JSON missing low_battery classification: %s", body)
+	}
+
+	page, err := http.Get(srv.URL + "/status")
+	if err != nil || page.StatusCode != http.StatusOK {
+		t.Fatalf("GET /status: err=%v code=%v", err, page.StatusCode)
+	}
+	htmlBody, _ := io.ReadAll(page.Body)
+	if !strings.Contains(string(htmlBody), "Aspen") {
+		t.Errorf("status page missing room name: %s", htmlBody)
+	}
+
+	formatJSON, _ := http.Get(srv.URL + "/status?format=json")
+	if ct := formatJSON.Header.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("status?format=json Content-Type = %q, want application/json", ct)
 	}
 }

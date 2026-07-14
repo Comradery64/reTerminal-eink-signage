@@ -40,7 +40,10 @@ spec:
           annotations:
             summary: "CRITICAL battery on display {{ $labels.device }} ({{ $value | printf \"%.0f\" }}%)"
             description: "Display {{ $labels.device }} will die imminently. Replace today."
-        # Catch units that stopped reporting (dead battery, crash, or off the network).
+        # Catch units that stopped reporting (dead battery, crash, or off the network). The 3600s
+        # here should match the broker's alerts.stale_after (config.example.yaml /
+        # broker.yaml.example), which /api/v1/status and /status use for the same classification —
+        # keep the two in sync so the Grafana dashboard, the status page, and this alert agree.
         - alert: DisplayStale
           expr: md_last_seen_seconds > 3600
           for: 15m

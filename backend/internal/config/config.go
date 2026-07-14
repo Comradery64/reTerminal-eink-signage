@@ -11,15 +11,15 @@ import (
 )
 
 type Config struct {
-	Listen       string        `yaml:"listen"`
-	PollInterval time.Duration `yaml:"poll_interval"`
-	Wake         WakeConfig    `yaml:"wake"`
-	Render       RenderConfig  `yaml:"render"`
-	Provider     string        `yaml:"provider"`
-	Google       GoogleConfig  `yaml:"google"`
-	Alerts       AlertConfig   `yaml:"alerts"`
+	Listen       string         `yaml:"listen"`
+	PollInterval time.Duration  `yaml:"poll_interval"`
+	Wake         WakeConfig     `yaml:"wake"`
+	Render       RenderConfig   `yaml:"render"`
+	Provider     string         `yaml:"provider"`
+	Google       GoogleConfig   `yaml:"google"`
+	Alerts       AlertConfig    `yaml:"alerts"`
 	Firmware     FirmwareConfig `yaml:"firmware"`
-	Rooms        []Room        `yaml:"rooms"`
+	Rooms        []Room         `yaml:"rooms"`
 }
 
 // FirmwareConfig drives OTA. The broker advertises Version+URL to devices via response headers;
@@ -30,7 +30,10 @@ type FirmwareConfig struct {
 	Dir     string `yaml:"dir"`     // optional: serve image files from this dir at /firmware/
 }
 
-// AlertConfig drives the in-broker low-battery notification to the building manager.
+// AlertConfig drives the in-broker low-battery notification to the building manager, and doubles
+// as the single source of truth for the thresholds the status endpoint (internal/status) uses to
+// classify a device — so /api/v1/status and the Prometheus rules in deploy/k3s/alerts.yaml never
+// disagree about what counts as "low battery" or "stale".
 // (The fleet-grade alternative is a Prometheus alert on md_battery_percent — see
 // deploy/k3s/alerts.yaml. The two are complementary; you can run either or both.)
 type AlertConfig struct {
@@ -38,6 +41,7 @@ type AlertConfig struct {
 	ClearPct      int           `yaml:"clear_pct"`       // reset alert state at/above this (default 55, hysteresis)
 	MinRenotify   time.Duration `yaml:"min_renotify"`    // suppress repeat alerts within this window (default 24h)
 	WebhookURL    string        `yaml:"webhook_url"`     // Slack incoming webhook; empty = log only
+	StaleAfter    time.Duration `yaml:"stale_after"`     // no telemetry for this long = "stale" (default 1h, matches DisplayStale)
 }
 
 type WakeConfig struct {
@@ -62,7 +66,6 @@ type RenderConfig struct {
 	Height int  `yaml:"height"`
 	Dither bool `yaml:"dither"`
 }
-
 
 type GoogleConfig struct {
 	// Path to the external-account (Workload Identity Federation) credential config JSON.
@@ -135,6 +138,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Alerts.MinRenotify == 0 {
 		c.Alerts.MinRenotify = 24 * time.Hour
+	}
+	if c.Alerts.StaleAfter == 0 {
+		c.Alerts.StaleAfter = time.Hour
 	}
 }
 

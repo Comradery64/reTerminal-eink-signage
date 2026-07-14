@@ -42,7 +42,7 @@ for the battery budget that justifies the 3-month claim.
 backend/    Go broker: calendar integration, Spectra6 renderer, cache, HTTP, telemetry
 firmware/   ESP-IDF (C++) firmware: deep-sleep state machine, fast Wi-Fi, TLS, EPD driver
 tools/      Device provisioning (token + secure-boot/flash-encryption helpers)
-docs/       Build guide, hardware reference, power budget, security notes
+docs/       Build guide, hardware reference, power budget, security notes, fleet dashboard plan
 ```
 
 ## Quick start

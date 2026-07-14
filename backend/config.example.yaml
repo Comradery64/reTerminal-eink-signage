@@ -40,6 +40,7 @@ alerts:
   clear_pct: 55              # re-arm only after charging back above this (hysteresis)
   min_renotify: "24h"        # if still low, remind at most once per day
   webhook_url: "${ALERT_WEBHOOK_URL}"   # Slack incoming webhook; empty = log only
+  stale_after: "1h"          # no telemetry for this long = "stale" on /status; matches DisplayStale below
 
 # OTA firmware rollout (optional). Leave version empty to disable. When set, the broker advertises
 # the target build to devices, which self-update if their running build differs. With `dir` set,

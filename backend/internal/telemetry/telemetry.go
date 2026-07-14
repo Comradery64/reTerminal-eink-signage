@@ -12,24 +12,25 @@ import (
 
 // Report is the JSON body posted by firmware (mirror of firmware/main/telemetry.hpp).
 type Report struct {
-	FirmwareVer  string  `json:"fw"`
-	BatteryMV    int     `json:"batt_mv"`
-	BatteryPct   int     `json:"batt_pct"`
-	HeapFree     int     `json:"heap_free"`
-	HeapMinFree  int     `json:"heap_min"`
-	RSSI         int     `json:"rssi"`
-	WakeReason   string  `json:"wake"`        // "timer" | "touch" | "poweron"
-	WakeMS       int     `json:"wake_ms"`     // active time this cycle
-	RenderedBool bool    `json:"rendered"`    // did we refresh the panel this wake?
-	ErrCode      string  `json:"err,omitempty"`
-	BootCount    int     `json:"boot"`
+	FirmwareVer  string   `json:"fw"`
+	BatteryMV    int      `json:"batt_mv"`
+	BatteryPct   int      `json:"batt_pct"`
+	HeapFree     int      `json:"heap_free"`
+	HeapMinFree  int      `json:"heap_min"`
+	RSSI         int      `json:"rssi"`
+	WakeReason   string   `json:"wake"`     // "timer" | "touch" | "poweron"
+	WakeMS       int      `json:"wake_ms"`  // active time this cycle
+	RenderedBool bool     `json:"rendered"` // did we refresh the panel this wake?
+	ErrCode      string   `json:"err,omitempty"`
+	BootCount    int      `json:"boot"`
 	TempC        *float64 `json:"temp_c,omitempty"` // room temperature (SHT4x); nil if not reported
 	RH           *float64 `json:"rh,omitempty"`     // room humidity %; nil if not reported
 }
 
 type state struct {
-	last     Report
-	lastSeen time.Time
+	last         Report
+	lastSeen     time.Time
+	lastRendered time.Time // zero until the device reports rendered=true at least once
 }
 
 type Store struct {
@@ -41,8 +42,35 @@ func New() *Store { return &Store{m: make(map[string]*state)} }
 
 func (s *Store) Ingest(deviceID string, r Report, now time.Time) {
 	s.mu.Lock()
-	s.m[deviceID] = &state{last: r, lastSeen: now}
+	st, ok := s.m[deviceID]
+	if !ok {
+		st = &state{}
+		s.m[deviceID] = st
+	}
+	lastRendered := st.lastRendered
+	if r.RenderedBool {
+		lastRendered = now
+	}
+	*st = state{last: r, lastSeen: now, lastRendered: lastRendered}
 	s.mu.Unlock()
+}
+
+// Snapshot is a point-in-time read of one device's telemetry, for consumers that need
+// structured access (e.g. the status endpoint) rather than /metrics' exposition text.
+type Snapshot struct {
+	Report       Report
+	LastSeen     time.Time
+	LastRendered time.Time // zero if the device has never reported rendered=true
+}
+
+func (s *Store) Snapshot(deviceID string) (Snapshot, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	st, ok := s.m[deviceID]
+	if !ok {
+		return Snapshot{}, false
+	}
+	return Snapshot{Report: st.last, LastSeen: st.lastSeen, LastRendered: st.lastRendered}, true
 }
 
 // WriteMetrics emits Prometheus exposition text.
@@ -72,6 +100,17 @@ func (s *Store) WriteMetrics(w io.Writer, now time.Time) {
 	fmt.Fprintln(w, "# TYPE md_last_seen_seconds gauge")
 	for _, id := range ids {
 		fmt.Fprintf(w, "md_last_seen_seconds{device=%q}%d\n", id, int(now.Sub(s.m[id].lastSeen).Seconds()))
+	}
+
+	// Age since the device last actually repainted the panel (rendered=true), as opposed to
+	// merely checking in — the ghosting/hardware-health signal md_last_seen_seconds can't give.
+	// Omitted for devices that have never reported a render, same convention as room env below.
+	fmt.Fprintln(w, "# HELP md_last_render_seconds Age of last actual panel repaint (rendered=true).")
+	fmt.Fprintln(w, "# TYPE md_last_render_seconds gauge")
+	for _, id := range ids {
+		if lr := s.m[id].lastRendered; !lr.IsZero() {
+			fmt.Fprintf(w, "md_last_render_seconds{device=%q}%d\n", id, int(now.Sub(lr).Seconds()))
+		}
 	}
 
 	// Room environment (only for devices whose SHT4x reported this cycle).

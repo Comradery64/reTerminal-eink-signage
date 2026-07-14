@@ -1,0 +1,265 @@
+{
+  "title": "Meeting Displays — Fleet Health",
+  "uid": "meeting-displays-fleet",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "1m",
+  "tags": ["meeting-displays"],
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {}
+      },
+      {
+        "name": "device",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": { "query": "label_values(md_last_seen_seconds, device)", "refId": "device" },
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Fleet summary",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Devices low on battery",
+      "description": "Count of devices at/below the low-battery alert threshold (matches DisplayBatteryLow in alerts.yaml and the broker's alerts.low_battery_pct).",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+      "targets": [
+        { "expr": "count(md_battery_percent < 45) OR vector(0)", "legendFormat": "low battery", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Stale devices (>1h since last report)",
+      "description": "Matches DisplayStale in alerts.yaml (3600s) and the broker's alerts.stale_after used by /api/v1/status.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
+      "targets": [
+        { "expr": "count(md_last_seen_seconds > 3600) OR vector(0)", "legendFormat": "stale", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Devices not repainting (>1h since last render)",
+      "description": "md_last_render_seconds ages only on rendered=true, so this catches a device that's still checking in but stuck on the same frame — a hardware/ghosting smell test that last_seen alone can't see.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
+      "targets": [
+        { "expr": "count(md_last_render_seconds > 3600) OR vector(0)", "legendFormat": "no recent render", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Fleet size",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+      "targets": [
+        { "expr": "count(md_last_seen_seconds)", "legendFormat": "devices", "refId": "A" }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "row",
+      "title": "Room: $device",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "collapsed": false,
+      "repeat": "device",
+      "repeatDirection": "v",
+      "panels": [
+        {
+          "id": 60,
+          "type": "gauge",
+          "title": "Battery",
+          "description": "md_battery_millivolts is available as the raw mV reading in a tooltip on hover — the %→V map is nonlinear near the low end, so treat the percent as approximate.",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 6, "w": 6, "x": 0, "y": 6 },
+          "targets": [
+            { "expr": "md_battery_percent{device=\"$device\"}", "legendFormat": "{{device}}", "refId": "A" },
+            { "expr": "md_battery_millivolts{device=\"$device\"}", "legendFormat": "{{device}} mV", "refId": "B", "hide": true }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "orange", "value": 45 },
+                  { "color": "green", "value": 55 }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "id": 61,
+          "type": "stat",
+          "title": "Availability (last check-in)",
+          "description": "Matches DisplayStale's 3600s threshold in alerts.yaml.",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 6, "w": 6, "x": 6, "y": 6 },
+          "targets": [
+            { "expr": "md_last_seen_seconds{device=\"$device\"}", "legendFormat": "{{device}}", "refId": "A" }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 900 },
+                  { "color": "red", "value": 3600 }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "id": 62,
+          "type": "stat",
+          "title": "Last screen refresh",
+          "description": "Age since the device last reported rendered=true — how long since the panel actually repainted, not just checked in.",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 6, "w": 6, "x": 12, "y": 6 },
+          "targets": [
+            { "expr": "md_last_render_seconds{device=\"$device\"}", "legendFormat": "{{device}}", "refId": "A" }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 3600 },
+                  { "color": "red", "value": 86400 }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "id": 63,
+          "type": "gauge",
+          "title": "Signal",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 6, "w": 6, "x": 18, "y": 6 },
+          "targets": [
+            { "expr": "md_wifi_rssi_dbm{device=\"$device\"}", "legendFormat": "{{device}}", "refId": "A" }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "dBm",
+              "min": -100,
+              "max": -30,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "orange", "value": -75 },
+                  { "color": "green", "value": -65 }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "id": 64,
+          "type": "stat",
+          "title": "Boot count (reboot-loop smell test)",
+          "description": "A device rebooting far more often than its wake cadence implies is crashing, not sleeping.",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 6, "w": 8, "x": 0, "y": 12 },
+          "targets": [
+            { "expr": "md_boot_count{device=\"$device\"}", "legendFormat": "{{device}}", "refId": "A" }
+          ]
+        },
+        {
+          "id": 65,
+          "type": "stat",
+          "title": "Room temperature",
+          "description": "Only reported by devices with the optional SHT4x sensor populated.",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 6, "w": 8, "x": 8, "y": 12 },
+          "targets": [
+            { "expr": "md_room_temp_celsius{device=\"$device\"}", "legendFormat": "{{device}}", "refId": "A" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "celsius" } }
+        },
+        {
+          "id": 66,
+          "type": "stat",
+          "title": "Room humidity",
+          "description": "Only reported by devices with the optional SHT4x sensor populated.",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 6, "w": 8, "x": 16, "y": 12 },
+          "targets": [
+            { "expr": "md_room_humidity_percent{device=\"$device\"}", "legendFormat": "{{device}}", "refId": "A" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "percent" } }
+        }
+      ]
+    }
+  ]
+}

@@ -36,6 +36,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/display/{device}", s.handleDisplay)
 	mux.HandleFunc("POST /api/v1/telemetry/{device}", s.handleTelemetry)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
+	// Cluster-internal-only, unauthenticated (same trust boundary as /metrics) — must never be
+	// added to the public Ingress; see docs/DASHBOARD.md Decisions.
+	mux.HandleFunc("GET /api/v1/status", s.handleStatusJSON)
+	mux.HandleFunc("GET /status", s.handleStatusPage)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
