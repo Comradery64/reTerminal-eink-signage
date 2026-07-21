@@ -264,7 +264,7 @@ var adminPageTmpl = template.Must(template.New("admin").Parse(`<!doctype html>
 .section { padding-top: var(--space-5); border-top: 1px solid var(--line); margin-top: var(--space-5); }
 .section:first-of-type { margin-top: 0; border-top: none; padding-top: 0; }
 table { border-collapse: collapse; width: 100%; margin-bottom: var(--space-4); }
-th, td { border-bottom: 1px solid var(--line); padding: var(--space-2) var(--space-3); text-align: left; font-size: var(--text-base); }
+th, td { border-bottom: 1px solid var(--line); padding: var(--space-2) var(--space-3); text-align: left; font-size: var(--text-base); vertical-align: middle; }
 th { font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .05em; color: var(--ink-soft); }
 td.mono { font-family: var(--font-mono); font-size: var(--text-sm); }
 label { display: block; font-size: var(--text-sm); font-weight: 600; color: var(--ink-soft); margin: var(--space-3) 0 var(--space-1); text-transform: uppercase; letter-spacing: .03em; }
