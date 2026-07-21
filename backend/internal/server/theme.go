@@ -87,6 +87,7 @@ a { color: var(--blue); text-decoration-thickness: 1px; }
 button, input, select {
   font: inherit; color: var(--ink); background: var(--paper); font-size: var(--text-base);
   border: 1px solid var(--line); border-radius: var(--radius); padding: var(--space-2) var(--space-3);
+  vertical-align: middle;
 }
 button {
   background: var(--ink); color: var(--paper); border-color: var(--ink);
