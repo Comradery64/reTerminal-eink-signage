@@ -76,6 +76,50 @@ func TestRequireRoleRedirectsWithoutCookie(t *testing.T) {
 	}
 }
 
+func TestRootRedirectsToAdminLogin(t *testing.T) {
+	s := testServerWithAuth(t)
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+	client := srv.Client()
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }
+
+	resp, err := client.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("GET /: want 302, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Location"); got != "/admin/login" {
+		t.Fatalf("GET /: want redirect to /admin/login, got %q", got)
+	}
+}
+
+func TestTrailingSlashCanonicalizesToRolePath(t *testing.T) {
+	s := testServerWithAuth(t)
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+	client := srv.Client()
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }
+
+	for path, want := range map[string]string{
+		"/admin/":     "/admin",
+		"/manager/":   "/manager",
+		"/dashboard/": "/dashboard",
+	} {
+		resp, err := client.Get(srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusMovedPermanently {
+			t.Fatalf("GET %s: want 301, got %d", path, resp.StatusCode)
+		}
+		if got := resp.Header.Get("Location"); got != want {
+			t.Fatalf("GET %s: want redirect to %q, got %q", path, want, got)
+		}
+	}
+}
+
 func TestLoginFlowEndToEnd(t *testing.T) {
 	s := testServerWithAuth(t)
 	mux := s.Handler()
