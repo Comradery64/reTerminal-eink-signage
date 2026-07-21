@@ -101,10 +101,10 @@ func (s *Server) Handler() http.Handler {
 		_, _ = w.Write([]byte("ok"))
 	})
 	// The root URL has no page of its own — send anyone who lands here straight to the most
-	// common front door (IT/admin) rather than a bare 404. "/{$}" matches only exact "/", never
-	// a subpath, so this can't shadow anything registered below.
+	// common front door (viewer dashboard) rather than a bare 404. "/{$}" matches only exact "/",
+	// never a subpath, so this can't shadow anything registered below.
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, adminUI.loginPath, http.StatusFound)
+		http.Redirect(w, r, viewerUI.homePath, http.StatusFound)
 	})
 	// Canonicalize a trailing slash on each role's bare path (e.g. "/dashboard/" -> "/dashboard")
 	// — without this, Go's ServeMux 404s it instead of falling through to the exact "/admin"/
