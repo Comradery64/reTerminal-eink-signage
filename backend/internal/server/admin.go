@@ -270,7 +270,7 @@ td.mono { font-family: var(--font-mono); font-size: var(--text-sm); }
 label { display: block; font-size: var(--text-sm); font-weight: 600; color: var(--ink-soft); margin: var(--space-3) 0 var(--space-1); text-transform: uppercase; letter-spacing: .03em; }
 input:not([type=submit]), select { display: block; width: 100%; max-width: 22rem; }
 form button[type=submit]:not(.danger):not(.ghost) { margin-top: var(--space-4); }
-.add-room { margin-top: var(--space-4); padding: var(--space-4) var(--space-5); }
+.add-room { margin-top: var(--space-4); padding: var(--space-4) var(--space-5); width: fit-content; }
 .add-room summary { cursor: pointer; font-weight: 600; color: var(--blue); }
 .add-room[open] summary { margin-bottom: var(--space-3); }
 @media (max-width: 46rem) {
@@ -322,7 +322,7 @@ form button[type=submit]:not(.danger):not(.ghost) { margin-top: var(--space-4); 
 <label for="r-device">Device ID</label><input id="r-device" type="text" name="device_id" required>
 <label for="r-name">Name</label><input id="r-name" type="text" name="name" required>
 <label for="r-room">Calendar (room email)</label><input id="r-room" type="text" name="room" required>
-<label for="r-token">Device token (leave blank to keep the existing one)</label><input id="r-token" type="text" name="token">
+<label for="r-token">Device token (leave blank to keep existing)</label><input id="r-token" type="text" name="token">
 <button type="submit">Save room</button>
 </form>
 </details>
@@ -355,7 +355,7 @@ they can see and do — manager gets status plus wake-mode control, receptionist
 <option value="manager" selected>Manager — status + wake-mode control</option>
 <option value="receptionist">Receptionist — status only, read-only</option>
 </select>
-<label for="u-password">Password (leave blank to keep the existing one)</label><input id="u-password" type="text" name="password">
+<label for="u-password">Password (leave blank to keep existing)</label><input id="u-password" type="text" name="password">
 <button type="submit">Save access</button>
 </form>
 </details>
