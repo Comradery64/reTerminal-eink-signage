@@ -100,6 +100,24 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	// The root URL has no page of its own — send anyone who lands here straight to the most
+	// common front door (IT/admin) rather than a bare 404. "/{$}" matches only exact "/", never
+	// a subpath, so this can't shadow anything registered below.
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, adminUI.loginPath, http.StatusFound)
+	})
+	// Canonicalize a trailing slash on each role's bare path (e.g. "/dashboard/" -> "/dashboard")
+	// — without this, Go's ServeMux 404s it instead of falling through to the exact "/admin"/
+	// "/manager"/"/dashboard" patterns registered below.
+	mux.HandleFunc("GET /admin/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, adminUI.homePath, http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("GET /manager/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, managerUI.homePath, http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("GET /dashboard/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, viewerUI.homePath, http.StatusMovedPermanently)
+	})
 	mux.HandleFunc("GET /admin/login", s.handleLoginPage(adminUI))
 	mux.HandleFunc("POST /admin/login", s.handleLoginSubmit(adminUI))
 	mux.HandleFunc("POST /admin/logout", s.handleLogout(adminUI))
