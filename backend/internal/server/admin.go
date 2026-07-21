@@ -269,7 +269,7 @@ th { font-family: var(--font-mono); font-size: var(--text-xs); text-transform: u
 td.mono { font-family: var(--font-mono); font-size: var(--text-sm); }
 label { display: block; font-size: var(--text-sm); font-weight: 600; color: var(--ink-soft); margin: var(--space-3) 0 var(--space-1); text-transform: uppercase; letter-spacing: .03em; }
 input:not([type=submit]), select { display: block; width: 100%; max-width: 22rem; }
-form button[type=submit] { margin-top: var(--space-4); }
+form button[type=submit]:not(.danger):not(.ghost) { margin-top: var(--space-4); }
 .add-room { margin-top: var(--space-4); padding: var(--space-4) var(--space-5); }
 .add-room summary { cursor: pointer; font-weight: 600; color: var(--blue); }
 .add-room[open] summary { margin-bottom: var(--space-3); }
