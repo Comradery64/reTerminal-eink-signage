@@ -299,7 +299,7 @@ func TestWithUserAddEditRequiresAdminAndSessionSecret(t *testing.T) {
 	}
 
 	// Editing an existing username (case-insensitive match) replaces rather than duplicates.
-	renamed, err := withBoth.WithUser(User{Username: "Bob", PasswordSHA256: hashOf64("new-pw"), Role: "receptionist"})
+	renamed, err := withBoth.WithUser(User{Username: "Bob", PasswordSHA256: hashOf64("new-pw"), Role: "viewer"})
 	if err != nil {
 		t.Fatalf("edit: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestWithUserAddEditRequiresAdminAndSessionSecret(t *testing.T) {
 		t.Fatalf("edit must not change user count, got %d", len(renamed.Users))
 	}
 	got, ok := renamed.UserByUsername("bob")
-	if !ok || got.Role != "receptionist" {
+	if !ok || got.Role != "viewer" {
 		t.Fatalf("edit did not apply: %+v", got)
 	}
 }

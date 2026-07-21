@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/auth"
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/cache"
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/config"
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/notify"
@@ -19,12 +20,12 @@ import (
 )
 
 const (
-	testAdminUsername        = "admin"
-	testAdminPassword        = "admin-secret"
-	testManagerUsername      = "manager"
-	testManagerPassword      = "manager-secret"
-	testReceptionistUsername = "frontdesk"
-	testReceptionistPassword = "front-desk-secret"
+	testAdminUsername   = "admin"
+	testAdminPassword   = "admin-secret"
+	testManagerUsername = "manager"
+	testManagerPassword = "manager-secret"
+	testViewerUsername  = "frontdesk"
+	testViewerPassword  = "front-desk-secret"
 )
 
 func hashHex(s string) string {
@@ -32,7 +33,7 @@ func hashHex(s string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// testServerWithAuth builds a *Server with one admin, one manager, and one receptionist account
+// testServerWithAuth builds a *Server with one admin, one manager, and one viewer account
 // configured, for exercising the login/logout/requireRole flow.
 func testServerWithAuth(t *testing.T) *Server {
 	t.Helper()
@@ -43,7 +44,7 @@ func testServerWithAuth(t *testing.T) *Server {
 		Users: []config.User{
 			{Username: testAdminUsername, PasswordSHA256: hashHex(testAdminPassword), Role: "admin"},
 			{Username: testManagerUsername, PasswordSHA256: hashHex(testManagerPassword), Role: "manager"},
-			{Username: testReceptionistUsername, PasswordSHA256: hashHex(testReceptionistPassword), Role: "receptionist"},
+			{Username: testViewerUsername, PasswordSHA256: hashHex(testViewerPassword), Role: "viewer"},
 		},
 		Auth: config.AuthConfig{SessionSecret: "01234567890123456789012345678901"},
 	}
@@ -150,7 +151,7 @@ func TestManagerLoginDoesNotGrantAdmin(t *testing.T) {
 	s := testServerWithAuth(t)
 	guarded := s.requireRole(adminUI, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 
-	token := s.sessions.Create(managerUI.role)
+	token := s.sessions.Create(managerUI.role, "manager-account", auth.SessionFlags{})
 	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
 	req.AddCookie(&http.Cookie{Name: adminUI.cookieName, Value: token})
 	rec := httptest.NewRecorder()

@@ -27,7 +27,7 @@ type Config struct {
 	Users        []User         `yaml:"users"`
 }
 
-// AuthConfig holds settings shared across every login on the /admin, /manager, and /receptionist
+// AuthConfig holds settings shared across every login on the /admin, /manager, and /dashboard
 // web UIs. Individual accounts live in Users, not here (see User) — this only holds the
 // session-signing sanity check.
 type AuthConfig struct {
@@ -38,18 +38,30 @@ type AuthConfig struct {
 	SessionSecret string `yaml:"session_secret"`
 }
 
-// User is one named login account for the /admin, /manager, or /receptionist web UIs — granting
+// User is one named login account for the /admin, /manager, or /viewer web UIs — granting
 // or revoking an employee's access means adding/editing/removing their User entry, normally done
 // through /admin's Access panel (config.WithUser/WithoutUser), not by hand-editing YAML after the
 // first bootstrap admin account. Role gates which of the three doors (see internal/server/login.go
 // roleUI) the account can log into: "admin" (full config surface), "manager" (status + wake-mode
-// control), or "receptionist" (status only, read-only). PasswordSHA256 follows the same hash
+// control), or "viewer" (status only, read-only). PasswordSHA256 follows the same hash
 // pattern as Room.TokenSHA256 — not a slow salted hash, since these are IT-issued/rotated
 // credentials, not end-user passwords chosen under attacker-guessable conditions.
 type User struct {
 	Username       string `yaml:"username"`
 	PasswordSHA256 string `yaml:"password_sha256"`
-	Role           string `yaml:"role"` // "admin" | "manager" | "receptionist"
+	Role           string `yaml:"role"` // "admin" | "manager" | "viewer"
+
+	// MustChangePassword is set whenever an admin sets or resets this account's password (see
+	// handleAdminSaveUser) and cleared once the account holder picks their own password (see
+	// handleChangePasswordSubmit). While true, requireRole redirects every request for this
+	// session to the change-password page — the account can't be used for anything else until
+	// the admin-chosen password is replaced.
+	MustChangePassword bool `yaml:"must_change_password,omitempty"`
+
+	// TOTPSecret is a base32 RFC 6238 secret — empty disables 2FA for this account. Self-enrolled
+	// from the admin page (see handleTOTPSetupSubmit), not admin-set like PasswordSHA256, so one
+	// admin can never see or set another admin's 2FA secret.
+	TOTPSecret string `yaml:"totp_secret,omitempty"`
 }
 
 // FirmwareConfig drives OTA. The broker advertises Version+URL to devices via response headers;
@@ -262,7 +274,7 @@ func (c *Config) validateUsers() error {
 			return fmt.Errorf("user %q: password_sha256 must be 64 hex chars", u.Username)
 		}
 		if !validUserRole(u.Role) {
-			return fmt.Errorf("user %q: role must be 'admin', 'manager', or 'receptionist', got %q", u.Username, u.Role)
+			return fmt.Errorf("user %q: role must be 'admin', 'manager', or 'viewer', got %q", u.Username, u.Role)
 		}
 		if u.Role == "admin" {
 			hasAdmin = true
@@ -455,7 +467,7 @@ func validWakeMode(m string) bool {
 }
 
 func validUserRole(r string) bool {
-	return r == "admin" || r == "manager" || r == "receptionist"
+	return r == "admin" || r == "manager" || r == "viewer"
 }
 
 // wakeModeFor resolves the effective wake mode for a room: its own override if set, else the

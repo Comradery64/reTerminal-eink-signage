@@ -189,7 +189,7 @@ func TestAdminAccessPageListsUsersWithoutExposingPasswordHash(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	html := string(body)
-	if !strings.Contains(html, testManagerUsername) || !strings.Contains(html, testReceptionistUsername) {
+	if !strings.Contains(html, testManagerUsername) || !strings.Contains(html, testViewerUsername) {
 		t.Errorf("admin page missing seeded usernames: %s", html)
 	}
 	for _, u := range s.cfg.Load().Users {
@@ -232,9 +232,77 @@ func TestAdminGrantAccessAddsUserWhoCanImmediatelyLogIn(t *testing.T) {
 	if loginResp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("new manager login: want 303, got %d", loginResp.StatusCode)
 	}
+	// An admin-set password forces a change before anything else is reachable — see
+	// TestAdminGrantedAccountMustChangePasswordBeforeUsingIt for the full forced-change flow.
+	if got := loginResp.Header.Get("Location"); got != "/manager/change-password" {
+		t.Fatalf("new manager login: want redirect to change-password, got %q", got)
+	}
 	page, err := client.Get(srv.URL + "/manager")
-	if err != nil || page.StatusCode != http.StatusOK {
-		t.Fatalf("GET /manager as newly granted user: err=%v code=%v", err, page)
+	if err != nil || page.StatusCode != http.StatusSeeOther {
+		t.Fatalf("GET /manager before changing the admin-set password must redirect, got err=%v code=%v", err, page)
+	}
+}
+
+func TestAdminGrantedAccountMustChangePasswordBeforeUsingIt(t *testing.T) {
+	s := testServerWithAuth(t)
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+	adminClient := loggedInAdminClient(t, srv)
+
+	if _, err := adminClient.PostForm(srv.URL+"/admin/access/save", url.Values{
+		"username": {"newmanager"}, "password": {"temp-pw"}, "role": {"manager"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	jar, _ := cookiejar.New(nil)
+	client := srv.Client()
+	client.Jar = jar
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }
+	if _, err := client.PostForm(srv.URL+"/manager/login", url.Values{"username": {"newmanager"}, "password": {"temp-pw"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Every other page redirects to change-password while the flag is set.
+	if page, err := client.Get(srv.URL + "/manager"); err != nil || page.StatusCode != http.StatusSeeOther {
+		t.Fatalf("GET /manager pre-change: err=%v code=%v", err, page)
+	}
+
+	// The change-password page itself must stay reachable (it's the one exception in requireRole).
+	if page, err := client.Get(srv.URL + "/manager/change-password"); err != nil || page.StatusCode != http.StatusOK {
+		t.Fatalf("GET /manager/change-password: err=%v code=%v", err, page)
+	}
+
+	resp, err := client.PostForm(srv.URL+"/manager/change-password", url.Values{
+		"password": {"my-own-pw"}, "password_confirm": {"my-own-pw"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resp.Header.Get("Location"); got != "/manager" {
+		t.Fatalf("change-password: want redirect to /manager, got %q", got)
+	}
+
+	// The flag is cleared in config too, and the account can now reach /manager directly.
+	updated, ok := s.cfg.Load().UserByUsername("newmanager")
+	if !ok || updated.MustChangePassword {
+		t.Fatalf("MustChangePassword should be cleared after a successful change: %+v", updated)
+	}
+	if page, err := client.Get(srv.URL + "/manager"); err != nil || page.StatusCode != http.StatusOK {
+		t.Fatalf("GET /manager post-change: err=%v code=%v", err, page)
+	}
+
+	// The old temporary password no longer works.
+	jar2, _ := cookiejar.New(nil)
+	client2 := srv.Client()
+	client2.Jar = jar2
+	client2.CheckRedirect = func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }
+	loginResp, err := client2.PostForm(srv.URL+"/manager/login", url.Values{"username": {"newmanager"}, "password": {"temp-pw"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loginResp.Header.Get("Location"); got == "/manager" {
+		t.Fatal("the old admin-set password must stop working once the account holder changes it")
 	}
 }
 
@@ -245,7 +313,7 @@ func TestAdminEditAccessChangesRoleWithoutChangingPassword(t *testing.T) {
 	client := loggedInAdminClient(t, srv)
 
 	resp, err := client.PostForm(srv.URL+"/admin/access/save", url.Values{
-		"original_username": {testManagerUsername}, "username": {testManagerUsername}, "role": {"receptionist"},
+		"original_username": {testManagerUsername}, "username": {testManagerUsername}, "role": {"viewer"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -255,7 +323,7 @@ func TestAdminEditAccessChangesRoleWithoutChangingPassword(t *testing.T) {
 	}
 
 	updated, ok := s.cfg.Load().UserByUsername(testManagerUsername)
-	if !ok || updated.Role != "receptionist" {
+	if !ok || updated.Role != "viewer" {
 		t.Fatalf("role change did not apply: %+v", updated)
 	}
 	if updated.PasswordSHA256 != hashHex(testManagerPassword) {

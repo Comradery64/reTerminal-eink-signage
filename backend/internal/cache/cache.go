@@ -12,6 +12,7 @@ import (
 
 type Entry struct {
 	Payload    render.Payload
+	PreviewPNG []byte // PNG encoding of the same render, for humans (e.g. /dashboard) — devices never see this
 	ETag       string // quoted hex CRC32, ready for the ETag header
 	RenderedAt time.Time
 	Err        error // last poll error, if the room is currently failing
