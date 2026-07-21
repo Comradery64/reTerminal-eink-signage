@@ -4,8 +4,10 @@
 package poller
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"image/png"
 	"log/slog"
 	"sync"
 	"time"
@@ -84,12 +86,26 @@ func (p *Poller) refreshRoom(ctx context.Context, room config.Room, from, to, no
 	cur, next := sched.Current(now), sched.Next(now)
 	p.tlm.SetRoomStatus(room.DeviceID, calendar.RoomStatus(cur, next, now))
 
-	payload := p.rend.Render(sched, now)
+	// Compose once and derive both the device payload and the human-readable preview from the
+	// same paletted image, rather than composing the layout twice.
+	pal := p.rend.Compose(sched, now)
+	payload := render.Encode(render.Pack(pal), p.rend.W, p.rend.H, 0, true)
 	etag := fmt.Sprintf("%q", fmt.Sprintf("%08x", payload.CRC32))
+
+	// Encoded once here (not on demand per HTTP request) since PNG-encoding an 800x480 palette
+	// image is cheap but needless to repeat for every /dashboard card load between polls.
+	var previewPNG []byte
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, pal); err == nil {
+		previewPNG = buf.Bytes()
+	} else {
+		p.log.Error("preview PNG encode failed", "device", room.DeviceID, "err", err)
+	}
 
 	prev, had := p.store.Get(room.DeviceID)
 	p.store.Set(room.DeviceID, cache.Entry{
 		Payload:    payload,
+		PreviewPNG: previewPNG,
 		ETag:       etag,
 		RenderedAt: now,
 		Cur:        cur,

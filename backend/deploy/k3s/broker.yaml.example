@@ -93,11 +93,11 @@ data:
       # server-side, see internal/auth) that a real secrets bundle was provisioned before login is
       # enabled. Required (>=32 bytes) if the users list below is non-empty.
       session_secret: "${SESSION_SECRET}"
-    # /admin, /manager, and /receptionist login accounts. Only this first bootstrap admin needs
+    # /admin, /manager, and /dashboard login accounts. Only this first bootstrap admin needs
     # to be hand-edited here — grant/edit/revoke everyone else from /admin's Access panel from now
     # on (config.WithUser/WithoutUser persist straight back to this ConfigMap, same as room
     # edits). role is "admin" (full config access), "manager" (status + wake-mode control), or
-    # "receptionist" (status only, read-only). At least one admin must always exist.
+    # "viewer" (status only, read-only). At least one admin must always exist.
     users:   # REPLACE with your own first admin account
       - username: "admin"
         password_sha256: "REPLACE_WITH_SHA256_OF_ADMIN_PASSWORD"
@@ -147,7 +147,7 @@ spec:
             - name: ALERT_WEBHOOK_URL
               valueFrom:
                 secretKeyRef: { name: broker-secrets, key: alert-webhook-url, optional: true }
-            # Session-signing sanity check for the /admin, /manager, /receptionist logins — see
+            # Session-signing sanity check for the /admin, /manager, /dashboard logins — see
             # secret.example.yaml. Login accounts themselves live in the ConfigMap's `users:` list
             # above, not here (managed from /admin's Access panel after the first bootstrap admin).
             - name: SESSION_SECRET
@@ -283,7 +283,7 @@ spec:
               service:
                 name: broker
                 port: { number: 80 }
-          - path: /receptionist
+          - path: /dashboard
             pathType: Prefix
             backend:
               service:

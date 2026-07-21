@@ -60,7 +60,7 @@ func (s *Server) refreshDerived(cfg *config.Config) {
 
 	entries := make([]auth.Entry, len(cfg.Users))
 	for i, u := range cfg.Users {
-		entries[i] = auth.Entry{Username: u.Username, PasswordSHA256: u.PasswordSHA256, Role: auth.Role(u.Role)}
+		entries[i] = auth.Entry{Username: u.Username, PasswordSHA256: u.PasswordSHA256, Role: auth.Role(u.Role), MustChangePassword: u.MustChangePassword, TOTPEnabled: u.TOTPSecret != ""}
 	}
 	directory := auth.NewDirectory(entries)
 
@@ -103,6 +103,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /admin/login", s.handleLoginPage(adminUI))
 	mux.HandleFunc("POST /admin/login", s.handleLoginSubmit(adminUI))
 	mux.HandleFunc("POST /admin/logout", s.handleLogout(adminUI))
+	mux.HandleFunc("GET /admin/change-password", s.requireRole(adminUI, s.handleChangePasswordPage(adminUI)))
+	mux.HandleFunc("POST /admin/change-password", s.requireRole(adminUI, s.handleChangePasswordSubmit(adminUI)))
+	mux.HandleFunc("GET /admin/verify-2fa", s.requireRole(adminUI, s.handleTOTPVerifyPage(adminUI)))
+	mux.HandleFunc("POST /admin/verify-2fa", s.requireRole(adminUI, s.handleTOTPVerifySubmit(adminUI)))
+	mux.HandleFunc("GET /admin/2fa/setup", s.requireRole(adminUI, s.handleTOTPSetupPage))
+	mux.HandleFunc("POST /admin/2fa/enable", s.requireRole(adminUI, s.handleTOTPEnableSubmit))
+	mux.HandleFunc("POST /admin/2fa/disable", s.requireRole(adminUI, s.handleTOTPDisableSubmit))
 	mux.HandleFunc("GET /admin", s.requireRole(adminUI, s.handleAdminPage))
 	mux.HandleFunc("POST /admin/rooms/save", s.requireRole(adminUI, s.handleAdminSaveRoom))
 	mux.HandleFunc("POST /admin/rooms/delete", s.requireRole(adminUI, s.handleAdminDeleteRoom))
@@ -114,12 +121,21 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /manager/login", s.handleLoginPage(managerUI))
 	mux.HandleFunc("POST /manager/login", s.handleLoginSubmit(managerUI))
 	mux.HandleFunc("POST /manager/logout", s.handleLogout(managerUI))
+	mux.HandleFunc("GET /manager/change-password", s.requireRole(managerUI, s.handleChangePasswordPage(managerUI)))
+	mux.HandleFunc("POST /manager/change-password", s.requireRole(managerUI, s.handleChangePasswordSubmit(managerUI)))
+	mux.HandleFunc("GET /manager/verify-2fa", s.requireRole(managerUI, s.handleTOTPVerifyPage(managerUI)))
+	mux.HandleFunc("POST /manager/verify-2fa", s.requireRole(managerUI, s.handleTOTPVerifySubmit(managerUI)))
 	mux.HandleFunc("GET /manager", s.requireRole(managerUI, s.handleManagerPage))
 	mux.HandleFunc("POST /manager/wake/save", s.requireRole(managerUI, s.handleManagerSaveWake))
-	mux.HandleFunc("GET /receptionist/login", s.handleLoginPage(receptionistUI))
-	mux.HandleFunc("POST /receptionist/login", s.handleLoginSubmit(receptionistUI))
-	mux.HandleFunc("POST /receptionist/logout", s.handleLogout(receptionistUI))
-	mux.HandleFunc("GET /receptionist", s.requireRole(receptionistUI, s.handleReceptionistPage))
+	mux.HandleFunc("GET /dashboard/login", s.handleLoginPage(viewerUI))
+	mux.HandleFunc("POST /dashboard/login", s.handleLoginSubmit(viewerUI))
+	mux.HandleFunc("POST /dashboard/logout", s.handleLogout(viewerUI))
+	mux.HandleFunc("GET /dashboard/change-password", s.requireRole(viewerUI, s.handleChangePasswordPage(viewerUI)))
+	mux.HandleFunc("POST /dashboard/change-password", s.requireRole(viewerUI, s.handleChangePasswordSubmit(viewerUI)))
+	mux.HandleFunc("GET /dashboard/verify-2fa", s.requireRole(viewerUI, s.handleTOTPVerifyPage(viewerUI)))
+	mux.HandleFunc("POST /dashboard/verify-2fa", s.requireRole(viewerUI, s.handleTOTPVerifySubmit(viewerUI)))
+	mux.HandleFunc("GET /dashboard", s.requireRole(viewerUI, s.handleDashboardPage))
+	mux.HandleFunc("GET /dashboard/preview/{device_id}", s.requireRole(viewerUI, s.handleDashboardPreview))
 	// Optional: serve signed OTA images from a local dir at /firmware/<file>.bin. Integrity is
 	// guaranteed by Secure Boot V2 signing, so this is unauthenticated (behind the internal ingress).
 	if dir := s.cfg.Load().Firmware.Dir; dir != "" {

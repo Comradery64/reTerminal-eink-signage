@@ -112,7 +112,7 @@ button.danger:hover { background: var(--red); color: var(--paper); }
 }
 .masthead { display: flex; flex-direction: column; gap: var(--space-2); }
 
-/* Room roster: the read-only card grid shared by /manager and /receptionist — same status chip,
+/* Room roster: the read-only card grid shared by /manager and /dashboard — same status chip,
    battery readout, and card treatment either way, so the two views read as one product with
    different amounts of control layered on top, not two separately-designed pages. */
 .grid {
@@ -132,7 +132,7 @@ button.danger:hover { background: var(--red); color: var(--paper); }
 }
 .chip::before { content: ""; width: .45rem; height: .45rem; background: currentColor; }
 .chip-ok { color: var(--green); }
-.chip-stale, .chip-low_battery { color: var(--amber); }
+.chip-stale, .chip-low_battery, .chip-warn { color: var(--amber); }
 .chip-unreported { color: var(--red); }
 .banner {
   margin: var(--space-4) var(--space-6) 0; padding: var(--space-2) var(--space-3);

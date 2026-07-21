@@ -8,10 +8,13 @@ import (
 func TestSessionCreateCheckRevoke(t *testing.T) {
 	s := NewSessionStore(time.Hour)
 
-	token := s.Create(RoleAdmin)
-	role, ok := s.Check(token)
-	if !ok || role != RoleAdmin {
-		t.Fatalf("Check(valid token) = %q, %v; want RoleAdmin, true", role, ok)
+	token := s.Create(RoleAdmin, "alice", SessionFlags{})
+	sess, ok := s.Check(token)
+	if !ok || sess.Role != RoleAdmin {
+		t.Fatalf("Check(valid token) = %+v, %v; want RoleAdmin, true", sess, ok)
+	}
+	if sess.Username != "alice" {
+		t.Fatalf("Check(valid token).Username = %q, want alice", sess.Username)
 	}
 
 	s.Revoke(token)
@@ -26,7 +29,7 @@ func TestSessionCreateCheckRevoke(t *testing.T) {
 
 func TestSessionExpiry(t *testing.T) {
 	s := NewSessionStore(1 * time.Millisecond)
-	token := s.Create(RoleManager)
+	token := s.Create(RoleManager, "bob", SessionFlags{})
 	time.Sleep(5 * time.Millisecond)
 	if _, ok := s.Check(token); ok {
 		t.Fatal("expired session must be rejected")
@@ -35,7 +38,7 @@ func TestSessionExpiry(t *testing.T) {
 
 func TestSessionTokensAreUnique(t *testing.T) {
 	s := NewSessionStore(time.Hour)
-	a, b := s.Create(RoleAdmin), s.Create(RoleAdmin)
+	a, b := s.Create(RoleAdmin, "alice", SessionFlags{}), s.Create(RoleAdmin, "alice", SessionFlags{})
 	if a == b {
 		t.Fatal("two Create calls must not produce the same token")
 	}
