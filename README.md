@@ -11,16 +11,16 @@ The design target is **≥ 3 months on battery** per wall-mounted unit, served b
 Go broker running on Kubernetes (developed against k3s).
 
 ```
-┌──────────────────┐         poll (2 min)         ┌──────────────────────────────┐
-│ Google Calendar  │ ◀──────────────────────────▶ │   broker (Go, on k3s)         │
-│ (room resources) │                               │  ┌─────────────────────────┐  │
-└──────────────────┘                               │  │ poller  → calendar svc  │  │
-                                                    │  │ render  → Spectra6 4bpp │  │
-   ┌───────────────┐   HTTPS GET (If-None-Match)    │  │ cache   → payload+ETag  │  │
-   │ reTerminal     │ ─────────────────────────────▶│  │ http    → /display /tlm │  │
-   │ E1002 (N units)│ ◀──── 200 payload | 304 ───────│  └─────────────────────────┘  │
-   │ (ESP32-S3)     │   POST /telemetry              └──────────────────────────────┘
-   └───────────────┘
+┌──────────────────┐         poll (2 min)            ┌───────────────────────────────┐
+│ Google Calendar  │ ◀─────────────────────────────▶ │   broker (Go, on k3s)         │
+│ (room resources) │                                 │  ┌─────────────────────────┐  │
+└──────────────────┘                                 │  │ poller  → calendar svc  │  │
+                                                     │  │ render  → Spectra6 4bpp │  │
+┌─────────────────┐   HTTPS GET (If-None-Match)      │  │ cache   → payload+ETag  │  │
+│ reTerminal      │ ───────────────────────────────▶ │  │ http    → /display /tlm │  │
+│ E1002 (N units) │ ◀──── 200 payload | 304 ──────── │  └─────────────────────────┘  │
+│ (ESP32-S3)      │   POST /telemetry                └───────────────────────────────┘
+└─────────────────┘
 ```
 
 ## Why this shape
