@@ -76,7 +76,7 @@ func TestRequireRoleRedirectsWithoutCookie(t *testing.T) {
 	}
 }
 
-func TestRootRedirectsToAdminLogin(t *testing.T) {
+func TestRootRedirectsToDashboard(t *testing.T) {
 	s := testServerWithAuth(t)
 	srv := httptest.NewTLSServer(s.Handler())
 	defer srv.Close()
@@ -90,8 +90,8 @@ func TestRootRedirectsToAdminLogin(t *testing.T) {
 	if resp.StatusCode != http.StatusFound {
 		t.Fatalf("GET /: want 302, got %d", resp.StatusCode)
 	}
-	if got := resp.Header.Get("Location"); got != "/admin/login" {
-		t.Fatalf("GET /: want redirect to /admin/login, got %q", got)
+	if got := resp.Header.Get("Location"); got != "/dashboard" {
+		t.Fatalf("GET /: want redirect to /dashboard, got %q", got)
 	}
 }
 
