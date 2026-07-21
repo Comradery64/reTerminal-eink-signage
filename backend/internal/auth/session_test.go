@@ -43,3 +43,25 @@ func TestSessionTokensAreUnique(t *testing.T) {
 		t.Fatal("two Create calls must not produce the same token")
 	}
 }
+
+func TestRoleSatisfiesCascadesDownward(t *testing.T) {
+	cases := []struct {
+		have, want Role
+		satisfies  bool
+	}{
+		{RoleAdmin, RoleAdmin, true},
+		{RoleAdmin, RoleManager, true},
+		{RoleAdmin, RoleViewer, true},
+		{RoleManager, RoleManager, true},
+		{RoleManager, RoleViewer, true},
+		{RoleManager, RoleAdmin, false},
+		{RoleViewer, RoleViewer, true},
+		{RoleViewer, RoleManager, false},
+		{RoleViewer, RoleAdmin, false},
+	}
+	for _, c := range cases {
+		if got := c.have.Satisfies(c.want); got != c.satisfies {
+			t.Errorf("%s.Satisfies(%s) = %v, want %v", c.have, c.want, got, c.satisfies)
+		}
+	}
+}

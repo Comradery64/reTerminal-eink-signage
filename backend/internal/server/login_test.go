@@ -205,3 +205,57 @@ func TestManagerLoginDoesNotGrantAdmin(t *testing.T) {
 		t.Fatalf("a manager session presented as admin_session must be rejected, got %d", rec.Code)
 	}
 }
+
+func TestAdminLoginGrantsManagerAndViewerDoors(t *testing.T) {
+	s := testServerWithAuth(t)
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+
+	for _, ui := range []roleUI{managerUI, viewerUI} {
+		jar, _ := cookiejar.New(nil)
+		client := srv.Client()
+		client.Jar = jar
+		client.CheckRedirect = func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }
+
+		resp, err := client.PostForm(srv.URL+ui.loginPath, url.Values{"username": {testAdminUsername}, "password": {testAdminPassword}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusSeeOther {
+			t.Fatalf("admin logging into %s: want 303, got %d", ui.loginPath, resp.StatusCode)
+		}
+		if got := resp.Header.Get("Location"); got != ui.homePath {
+			t.Fatalf("admin logging into %s: want redirect to %s, got %q", ui.loginPath, ui.homePath, got)
+		}
+		page, err := client.Get(srv.URL + ui.homePath)
+		if err != nil || page.StatusCode != http.StatusOK {
+			t.Fatalf("admin session at %s: err=%v code=%v", ui.homePath, err, page)
+		}
+	}
+}
+
+func TestManagerLoginGrantsViewerDoor(t *testing.T) {
+	s := testServerWithAuth(t)
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+
+	jar, _ := cookiejar.New(nil)
+	client := srv.Client()
+	client.Jar = jar
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }
+
+	resp, err := client.PostForm(srv.URL+viewerUI.loginPath, url.Values{"username": {testManagerUsername}, "password": {testManagerPassword}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("manager logging into /dashboard/login: want 303, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Location"); got != viewerUI.homePath {
+		t.Fatalf("manager logging into /dashboard/login: want redirect to %s, got %q", viewerUI.homePath, got)
+	}
+	page, err := client.Get(srv.URL + viewerUI.homePath)
+	if err != nil || page.StatusCode != http.StatusOK {
+		t.Fatalf("manager session at /dashboard: err=%v code=%v", err, page)
+	}
+}

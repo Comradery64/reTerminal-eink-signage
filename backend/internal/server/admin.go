@@ -249,7 +249,7 @@ func (s *Server) currentAdminSession(r *http.Request) (auth.Session, bool) {
 		return auth.Session{}, false
 	}
 	sess, ok := s.sessions.Check(c.Value)
-	if !ok || sess.Role != adminUI.role {
+	if !ok || !sess.Role.Satisfies(adminUI.role) {
 		return auth.Session{}, false
 	}
 	return sess, true
