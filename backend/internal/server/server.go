@@ -5,30 +5,86 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
+	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/auth"
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/cache"
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/config"
+	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/kube"
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/notify"
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/telemetry"
 )
 
+// sessionTTL is how long an admin/manager login lasts before requiring re-authentication.
+const sessionTTL = 12 * time.Hour
+
 type Server struct {
-	cfg    *config.Config
-	cache  *cache.Store
-	tlm    *telemetry.Store
-	alerts *notify.Manager
-	names  map[string]string // device_id -> friendly room name (for alert messages)
-	auth   *deviceAuth
-	log    *slog.Logger
+	cfg      *config.Live
+	cache    *cache.Store
+	tlm      *telemetry.Store
+	alerts   *notify.Manager
+	sessions *auth.SessionStore
+	kube     *kube.Client // nil when not running in-cluster (e.g. local/demo) — writes stay in-memory only
+	log      *slog.Logger
+
+	// derived caches, recomputed from cfg by refreshDerived on New and on every admin/manager
+	// write (see admin.go/manager.go) — never read cfg's Rooms directly for these, or a write
+	// that lands between requests would leave a stale token/name/credential behind.
+	derivedMu sync.RWMutex
+	names     map[string]string // device_id -> friendly room name (for alert messages)
+	auth      *deviceAuth
+	directory *auth.Directory
 }
 
-func New(cfg *config.Config, c *cache.Store, tlm *telemetry.Store, alerts *notify.Manager, log *slog.Logger) *Server {
+func New(cfg *config.Live, c *cache.Store, tlm *telemetry.Store, alerts *notify.Manager, log *slog.Logger) *Server {
+	s := &Server{cfg: cfg, cache: c, tlm: tlm, alerts: alerts, sessions: auth.NewSessionStore(sessionTTL), log: log}
+	s.refreshDerived(cfg.Load())
+	if kc, err := kube.NewInClusterClient(); err == nil {
+		s.kube = kc
+	} else {
+		log.Info("kube client unavailable — config writes will not persist to the ConfigMap", "err", err)
+	}
+	return s
+}
+
+// refreshDerived recomputes the device-token, device-name, and login-directory caches from cfg.
+// Call this after every config.Live.Store so a room add/edit/delete, token rotation, or
+// access-panel change (grant/revoke/re-role a user) takes effect immediately, no restart needed.
+func (s *Server) refreshDerived(cfg *config.Config) {
 	names := make(map[string]string, len(cfg.Rooms))
 	for _, r := range cfg.Rooms {
 		names[r.DeviceID] = r.Name
 	}
-	return &Server{cfg: cfg, cache: c, tlm: tlm, alerts: alerts, names: names, auth: newDeviceAuth(cfg), log: log}
+	deviceAuthTable := newDeviceAuth(cfg)
+
+	entries := make([]auth.Entry, len(cfg.Users))
+	for i, u := range cfg.Users {
+		entries[i] = auth.Entry{Username: u.Username, PasswordSHA256: u.PasswordSHA256, Role: auth.Role(u.Role)}
+	}
+	directory := auth.NewDirectory(entries)
+
+	s.derivedMu.Lock()
+	s.names, s.auth, s.directory = names, deviceAuthTable, directory
+	s.derivedMu.Unlock()
+}
+
+func (s *Server) deviceAuthTable() *deviceAuth {
+	s.derivedMu.RLock()
+	defer s.derivedMu.RUnlock()
+	return s.auth
+}
+
+func (s *Server) roomName(deviceID string) string {
+	s.derivedMu.RLock()
+	defer s.derivedMu.RUnlock()
+	return s.names[deviceID]
+}
+
+func (s *Server) userDirectory() *auth.Directory {
+	s.derivedMu.RLock()
+	defer s.derivedMu.RUnlock()
+	return s.directory
 }
 
 func (s *Server) Handler() http.Handler {
@@ -44,11 +100,31 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	mux.HandleFunc("GET /admin/login", s.handleLoginPage(adminUI))
+	mux.HandleFunc("POST /admin/login", s.handleLoginSubmit(adminUI))
+	mux.HandleFunc("POST /admin/logout", s.handleLogout(adminUI))
+	mux.HandleFunc("GET /admin", s.requireRole(adminUI, s.handleAdminPage))
+	mux.HandleFunc("POST /admin/rooms/save", s.requireRole(adminUI, s.handleAdminSaveRoom))
+	mux.HandleFunc("POST /admin/rooms/delete", s.requireRole(adminUI, s.handleAdminDeleteRoom))
+	mux.HandleFunc("POST /admin/wake/save", s.requireRole(adminUI, s.handleAdminSaveWakeDefaults))
+	mux.HandleFunc("POST /admin/alerts/save", s.requireRole(adminUI, s.handleAdminSaveAlerts))
+	mux.HandleFunc("POST /admin/firmware/save", s.requireRole(adminUI, s.handleAdminSaveFirmware))
+	mux.HandleFunc("POST /admin/access/save", s.requireRole(adminUI, s.handleAdminSaveUser))
+	mux.HandleFunc("POST /admin/access/delete", s.requireRole(adminUI, s.handleAdminDeleteUser))
+	mux.HandleFunc("GET /manager/login", s.handleLoginPage(managerUI))
+	mux.HandleFunc("POST /manager/login", s.handleLoginSubmit(managerUI))
+	mux.HandleFunc("POST /manager/logout", s.handleLogout(managerUI))
+	mux.HandleFunc("GET /manager", s.requireRole(managerUI, s.handleManagerPage))
+	mux.HandleFunc("POST /manager/wake/save", s.requireRole(managerUI, s.handleManagerSaveWake))
+	mux.HandleFunc("GET /receptionist/login", s.handleLoginPage(receptionistUI))
+	mux.HandleFunc("POST /receptionist/login", s.handleLoginSubmit(receptionistUI))
+	mux.HandleFunc("POST /receptionist/logout", s.handleLogout(receptionistUI))
+	mux.HandleFunc("GET /receptionist", s.requireRole(receptionistUI, s.handleReceptionistPage))
 	// Optional: serve signed OTA images from a local dir at /firmware/<file>.bin. Integrity is
 	// guaranteed by Secure Boot V2 signing, so this is unauthenticated (behind the internal ingress).
-	if dir := s.cfg.Firmware.Dir; dir != "" {
+	if dir := s.cfg.Load().Firmware.Dir; dir != "" {
 		mux.Handle("GET /firmware/", http.StripPrefix("/firmware/", http.FileServer(http.Dir(dir))))
-		s.log.Info("serving OTA images", "dir", dir, "version", s.cfg.Firmware.Version)
+		s.log.Info("serving OTA images", "dir", dir, "version", s.cfg.Load().Firmware.Version)
 	}
 	return s.recover(mux)
 }
@@ -71,13 +147,14 @@ func setNoWake(w http.ResponseWriter, secs uint32) {
 }
 
 func (s *Server) ListenAndServe() error {
+	cfg := s.cfg.Load()
 	srv := &http.Server{
-		Addr:         s.cfg.Listen,
+		Addr:         cfg.Listen,
 		Handler:      s.Handler(),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 20 * time.Second,
 		IdleTimeout:  30 * time.Second,
 	}
-	s.log.Info("broker listening", "addr", s.cfg.Listen, "rooms", len(s.cfg.Rooms))
+	s.log.Info("broker listening", "addr", cfg.Listen, "rooms", len(cfg.Rooms))
 	return srv.ListenAndServe()
 }

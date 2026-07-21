@@ -31,6 +31,7 @@ func main() {
 		log.Error("config load failed", "err", err)
 		os.Exit(1)
 	}
+	live := config.NewLive(cfg)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -52,13 +53,13 @@ func main() {
 	tlm := telemetry.New()
 	rend := render.New(cfg.Render.Width, cfg.Render.Height, cfg.Render.Dither)
 
-	p := poller.New(cfg, prov, rend, store, log)
+	p := poller.New(live, prov, rend, store, tlm, log)
 	go p.Run(ctx)
 
 	alerts := notify.NewManager(cfg.Alerts.WebhookURL, cfg.Alerts.LowBatteryPct,
 		cfg.Alerts.ClearPct, cfg.Alerts.MinRenotify, log)
 
-	srv := server.New(cfg, store, tlm, alerts, log)
+	srv := server.New(live, store, tlm, alerts, log)
 	go func() {
 		if err := srv.ListenAndServe(); err != nil {
 			log.Error("http server stopped", "err", err)

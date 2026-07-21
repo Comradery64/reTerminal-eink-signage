@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/cache"
+	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/calendar"
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/config"
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/notify"
+	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/render"
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/telemetry"
 )
 
@@ -30,7 +32,7 @@ func testServer() *Server {
 	cfg.Alerts = config.AlertConfig{LowBatteryPct: 45, ClearPct: 55, MinRenotify: 24 * time.Hour, StaleAfter: time.Hour}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	alerts := notify.NewManager("", 45, 55, 24*time.Hour, log)
-	return New(cfg, cache.New(), telemetry.New(), alerts, log)
+	return New(config.NewLive(cfg), cache.New(), telemetry.New(), alerts, log)
 }
 
 // The exact JSON the firmware's tlm::to_json emits (incl. SHT4x env fields) must decode and
@@ -93,12 +95,74 @@ func TestDisplayServesOTAHeaders(t *testing.T) {
 	}
 }
 
+// X-Next-Wake must reflect a fresh NextWakeSeconds(now) computation, not whatever was cached in
+// the payload from whenever the poller last rendered this room — that snapshot can be up to
+// PollInterval stale by the time a device actually requests it, which is exactly the bug this
+// guards against (see internal/render.Render's doc comment).
+func TestDisplayNextWakeIsFreshNotCached(t *testing.T) {
+	s := testServer()
+	s.cfg.Load().Wake.BusinessHoursSeconds = 900
+	s.cfg.Load().Wake.OffHoursSeconds = 900
+	s.cfg.Load().Wake.BusinessStartHour = 0
+	s.cfg.Load().Wake.BusinessEndHour = 24
+	// Payload.NextWakeS is a deliberately wrong stale value the response must NOT use.
+	s.cache.Set("rt-1", cache.Entry{ETag: `"abc123"`, Payload: render.Payload{NextWakeS: 999999}})
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	for _, ifNoneMatch := range []string{"", `"abc123"`} { // exercise both the 200 and 304 paths
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/display/rt-1", nil)
+		req.Header.Set("Authorization", "Bearer "+testToken)
+		if ifNoneMatch != "" {
+			req.Header.Set("If-None-Match", ifNoneMatch)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := resp.Header.Get("X-Next-Wake")
+		if got == "999999" || got == "" {
+			t.Fatalf("If-None-Match=%q: X-Next-Wake = %q, want a fresh value (not the stale cached one)", ifNoneMatch, got)
+		}
+	}
+}
+
+// End-to-end wiring check for smart mode: cache.Entry.Cur/Next (as the poller would set them) must
+// actually drive the X-Next-Wake header through config.NextWakeDuration, capped correctly during
+// business hours.
+func TestDisplaySmartModeUsesCalendarState(t *testing.T) {
+	s := testServer()
+	s.cfg.Load().Wake.Mode = "smart"
+	s.cfg.Load().Wake.Timezone = "UTC"
+	s.cfg.Load().Wake.BusinessStartHour = 0
+	s.cfg.Load().Wake.BusinessEndHour = 24 // "now" is always business hours in this test
+	s.cfg.Load().Wake.BusinessHoursSeconds = 15 * 60
+
+	now := time.Now().UTC()
+	next := calendar.Event{Subject: "later", Start: now.Add(3 * time.Hour), End: now.Add(4 * time.Hour)}
+	s.cache.Set("rt-1", cache.Entry{ETag: `"abc123"`, Next: &next})
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/display/rt-1", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := resp.Header.Get("X-Next-Wake")
+	want := "900" // capped at BusinessHoursSeconds despite the next meeting being 3h away
+	if got != want {
+		t.Fatalf("X-Next-Wake = %q, want %q (business-hours cap, meeting is 3h out)", got, want)
+	}
+}
+
 // The once-daily forced-refresh override bypasses a matching If-None-Match exactly once per
 // device per day, so a room that never changes still gets a periodic real repaint (anti-ghosting).
 func TestDisplayForcedDailyRefresh(t *testing.T) {
 	s := testServer()
 	hour := time.Now().UTC().Hour()
-	s.cfg.Wake.ForcedRefreshHour = &hour
+	s.cfg.Load().Wake.ForcedRefreshHour = &hour
 	s.cache.Set("rt-1", cache.Entry{ETag: `"abc123"`})
 	srv := httptest.NewServer(s.Handler())
 	defer srv.Close()

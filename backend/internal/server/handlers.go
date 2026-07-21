@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/config"
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/telemetry"
 )
 
@@ -16,37 +17,49 @@ const maxTelemetryBody = 4 << 10 // 4 KiB is plenty for a health report
 // and honors If-None-Match so an unchanged room costs the device zero panel-refresh energy.
 func (s *Server) handleDisplay(w http.ResponseWriter, r *http.Request) {
 	device := r.PathValue("device")
-	if !s.auth.verify(device, r) {
+	if !s.deviceAuthTable().verify(device, r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
+	// Snapshot once: the whole request must see one consistent config even if an admin/manager
+	// write lands concurrently mid-request.
+	cfg := s.cfg.Load()
 	now := time.Now()
+	room, _ := cfg.RoomByDeviceID(device) // zero Room (fleet defaults) if somehow unconfigured
 	entry, ok := s.cache.Get(device)
-	nextWake := s.cfg.NextWakeSeconds(now)
 	if !ok || entry.ETag == "" {
-		// Poller hasn't produced a frame yet (cold start) or the room is failing.
-		setNoWake(w, nextWake)
+		// Poller hasn't produced a frame yet (cold start) or the room is failing — no known
+		// calendar state, so this resolves to each mode's "nothing scheduled" fallback.
+		setNoWake(w, cfg.NextWakeDuration(room, nil, nil, now))
 		// Tell the device to retry soon rather than nap a full interval on cold start.
 		w.Header().Set("Retry-After", "30")
 		http.Error(w, "no payload yet", http.StatusServiceUnavailable)
 		return
 	}
 
+	// Computed fresh from `now` (the actual request time) against the poller's last-resolved
+	// calendar state (entry.Cur/Next — up to PollInterval stale as *which* events, but their
+	// timestamps are exact so this is still accurate) — not cached from whenever the poller last
+	// rendered this room. The embedded MDPF payload's own next-wake field is always 0 (see
+	// render.Render), so this header is authoritative on both 200 and 304.
+	nextWake := cfg.NextWakeDuration(room, entry.Cur, entry.Next, now)
 	w.Header().Set("ETag", entry.ETag)
-	setNoWake(w, entry.Payload.NextWakeS)
-	s.setFirmwareHeaders(w) // OTA advertisement (sent on both 200 and 304)
+	setNoWake(w, nextWake)
+	s.setFirmwareHeaders(w, cfg) // OTA advertisement (sent on both 200 and 304)
 
 	// Once-daily anti-ghosting override: force a real repaint even though content is unchanged,
 	// so a room that never changes doesn't sit on the same frame indefinitely. Opt-in via
 	// wake.forced_refresh_hour; disabled (nil) by default.
 	forceRefresh := false
-	if h := s.cfg.Wake.ForcedRefreshHour; h != nil {
-		forceRefresh = s.cache.ShouldForceFullRefresh(device, now, *h, s.cfg.Location())
+	if h := cfg.Wake.ForcedRefreshHour; h != nil {
+		forceRefresh = s.cache.ShouldForceFullRefresh(device, now, *h, cfg.Location())
 	}
 
 	// Conditional GET: identical content → 304, device skips the panel refresh entirely.
 	if match := r.Header.Get("If-None-Match"); !forceRefresh && match != "" && match == entry.ETag {
+		s.log.Info("display fetch", "device", device, "status", 304, "if_none_match", match,
+			"etag", entry.ETag, "next_wake_s", nextWake)
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
@@ -61,22 +74,24 @@ func (s *Server) handleDisplay(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Length", strconv.Itoa(len(entry.Payload.Bytes)))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(entry.Payload.Bytes)
+	s.log.Info("display fetch", "device", device, "status", 200, "if_none_match", r.Header.Get("If-None-Match"),
+		"etag", entry.ETag, "next_wake_s", nextWake, "forced_refresh", forceRefresh)
 }
 
 // setFirmwareHeaders advertises the OTA target to devices. No-op if no firmware version is set.
-func (s *Server) setFirmwareHeaders(w http.ResponseWriter) {
-	if s.cfg.Firmware.Version == "" {
+func (s *Server) setFirmwareHeaders(w http.ResponseWriter, cfg *config.Config) {
+	if cfg.Firmware.Version == "" {
 		return
 	}
-	w.Header().Set("X-Fw-Target", s.cfg.Firmware.Version)
-	if s.cfg.Firmware.URL != "" {
-		w.Header().Set("X-Fw-Url", s.cfg.Firmware.URL)
+	w.Header().Set("X-Fw-Target", cfg.Firmware.Version)
+	if cfg.Firmware.URL != "" {
+		w.Header().Set("X-Fw-Url", cfg.Firmware.URL)
 	}
 }
 
 func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 	device := r.PathValue("device")
-	if !s.auth.verify(device, r) {
+	if !s.deviceAuthTable().verify(device, r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -89,7 +104,7 @@ func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	s.tlm.Ingest(device, rep, now)
 	// Hysteresis + dedupe + dispatch all live in the alert manager; this is non-blocking.
-	s.alerts.EvaluateBattery(device, s.names[device], rep.BatteryPct, rep.BatteryMV, now)
+	s.alerts.EvaluateBattery(device, s.roomName(device), rep.BatteryPct, rep.BatteryMV, now)
 	w.WriteHeader(http.StatusNoContent)
 }
 

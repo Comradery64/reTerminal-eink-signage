@@ -31,6 +31,15 @@ type state struct {
 	last         Report
 	lastSeen     time.Time
 	lastRendered time.Time // zero until the device reports rendered=true at least once
+	roomStatus   string    // "available" | "starting_soon" | "in_meeting"; "" until first set
+	reported     bool      // true once Ingest has been called at least once (firmware telemetry
+	// received) — distinct from having a roomStatus, which SetRoomStatus sets independently and
+	// much earlier (as soon as the poller can compute a schedule, before any device has ever
+	// phoned home). Without this, a device that's only ever gotten a room-status update — the
+	// entire not-yet-flashed rest of the fleet, in practice — would emit battery_percent=0 and a
+	// last_seen_seconds computed from a zero time.Time (a multi-billion-second garbage value),
+	// which read in Grafana as "every unflashed device is a dead, empty battery" instead of
+	// "no telemetry yet".
 }
 
 type Store struct {
@@ -51,7 +60,22 @@ func (s *Store) Ingest(deviceID string, r Report, now time.Time) {
 	if r.RenderedBool {
 		lastRendered = now
 	}
-	*st = state{last: r, lastSeen: now, lastRendered: lastRendered}
+	*st = state{last: r, lastSeen: now, lastRendered: lastRendered, roomStatus: st.roomStatus, reported: true}
+	s.mu.Unlock()
+}
+
+// SetRoomStatus records the room's current calendar-derived state (calendar.RoomStatus) —
+// what the panel is actually displaying right now, as opposed to device health. Called by the
+// poller on every render cycle, independent of firmware telemetry POSTs, so it's set even for a
+// device that has never phoned home yet.
+func (s *Store) SetRoomStatus(deviceID, status string) {
+	s.mu.Lock()
+	st, ok := s.m[deviceID]
+	if !ok {
+		st = &state{}
+		s.m[deviceID] = st
+	}
+	st.roomStatus = status
 	s.mu.Unlock()
 }
 
@@ -67,7 +91,7 @@ func (s *Store) Snapshot(deviceID string) (Snapshot, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	st, ok := s.m[deviceID]
-	if !ok {
+	if !ok || !st.reported {
 		return Snapshot{}, false
 	}
 	return Snapshot{Report: st.last, LastSeen: st.lastSeen, LastRendered: st.lastRendered}, true
@@ -78,9 +102,15 @@ func (s *Store) WriteMetrics(w io.Writer, now time.Time) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	// Telemetry-derived metrics (battery, signal, heap, ...) are scoped to devices that have
+	// actually POSTed at least once — a device known only via SetRoomStatus (i.e. configured but
+	// never flashed/never phoned home) must not show up as "0% battery" / "stale", which is what
+	// happens if it's included with its zero-value Report and zero time.Time lastSeen.
 	ids := make([]string, 0, len(s.m))
-	for id := range s.m {
-		ids = append(ids, id)
+	for id, st := range s.m {
+		if st.reported {
+			ids = append(ids, id)
+		}
 	}
 	sort.Strings(ids)
 
@@ -127,6 +157,23 @@ func (s *Store) WriteMetrics(w io.Writer, now time.Time) {
 		if h := s.m[id].last.RH; h != nil {
 			fmt.Fprintf(w, "md_room_humidity_percent{device=%q}%g\n", id, *h)
 		}
+	}
+
+	// Info-style metric (value always 1, state carried entirely in the label) — what the panel
+	// is actually displaying right now: available | starting_soon | in_meeting. Emitted for every
+	// configured room with a computed schedule, independent of `reported`, since this comes from
+	// the poller/calendar, not firmware telemetry.
+	statusIDs := make([]string, 0, len(s.m))
+	for id, st := range s.m {
+		if st.roomStatus != "" {
+			statusIDs = append(statusIDs, id)
+		}
+	}
+	sort.Strings(statusIDs)
+	fmt.Fprintln(w, "# HELP md_room_status_info Current displayed room status (see the status label).")
+	fmt.Fprintln(w, "# TYPE md_room_status_info gauge")
+	for _, id := range statusIDs {
+		fmt.Fprintf(w, "md_room_status_info{device=%q,status=%q}1\n", id, s.m[id].roomStatus)
 	}
 }
 

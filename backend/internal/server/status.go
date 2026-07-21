@@ -14,7 +14,7 @@ import (
 // docs/DASHBOARD.md Decisions) — never add this path to the public Ingress.
 func (s *Server) handleStatusJSON(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(status.Build(s.cfg, s.tlm, time.Now()))
+	_ = json.NewEncoder(w).Encode(status.Build(s.cfg.Load(), s.tlm, time.Now()))
 }
 
 // handleStatusPage serves GET /status — a minimal server-rendered HTML table over the same
@@ -26,7 +26,7 @@ func (s *Server) handleStatusPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := statusPageTmpl.Execute(w, status.Build(s.cfg, s.tlm, time.Now())); err != nil {
+	if err := statusPageTmpl.Execute(w, status.Build(s.cfg.Load(), s.tlm, time.Now())); err != nil {
 		s.log.Error("status page render failed", "err", err)
 	}
 }
