@@ -50,7 +50,7 @@ func (s *Server) requireRole(ui roleUI, next http.HandlerFunc) http.HandlerFunc 
 			return
 		}
 		sess, ok := s.sessions.Check(c.Value)
-		if !ok || sess.Role != ui.role {
+		if !ok || !sess.Role.Satisfies(ui.role) {
 			http.Redirect(w, r, ui.loginPath, http.StatusSeeOther)
 			return
 		}
@@ -86,11 +86,12 @@ func (s *Server) handleLoginSubmit(ui roleUI) http.HandlerFunc {
 		}
 		username := r.PostForm.Get("username")
 		password := r.PostForm.Get("password")
-		// Reject a correct login at the wrong door with the same generic message as a wrong
-		// password — telling the user "your account exists but doesn't work here" would leak
-		// which usernames are valid.
+		// Reject a wrong password, an unknown username, and a real account that's simply too low
+		// a role for this door, all with the same generic message — telling the user "your
+		// account exists but doesn't work here" would leak which usernames are valid. A role that
+		// outranks this door (e.g. an admin at /manager/login) is let through: see Role.Satisfies.
 		result, ok := s.userDirectory().Verify(username, password)
-		if !ok || result.Role != ui.role {
+		if !ok || !result.Role.Satisfies(ui.role) {
 			redirect := ui.loginPath + "?error=1"
 			if next := r.PostForm.Get("next"); next != "" {
 				redirect += "&next=" + url.QueryEscape(next)
@@ -99,8 +100,10 @@ func (s *Server) handleLoginSubmit(ui roleUI) http.HandlerFunc {
 			return
 		}
 
+		// Store the account's own role, not the door's — so a session created by an admin logging
+		// into /manager still reports Role: admin, and later Satisfies checks stay correct.
 		flags := auth.SessionFlags{MustChangePassword: result.MustChangePassword, Pending2FA: result.TOTPEnabled}
-		token := s.sessions.Create(ui.role, username, flags)
+		token := s.sessions.Create(result.Role, username, flags)
 		http.SetCookie(w, &http.Cookie{
 			Name:     ui.cookieName,
 			Value:    token,
@@ -170,7 +173,7 @@ func (s *Server) handleChangePasswordSubmit(ui roleUI) http.HandlerFunc {
 			return
 		}
 		sess, ok := s.sessions.Check(c.Value)
-		if !ok || sess.Role != ui.role {
+		if !ok || !sess.Role.Satisfies(ui.role) {
 			http.Redirect(w, r, ui.loginPath, http.StatusSeeOther)
 			return
 		}
@@ -205,7 +208,7 @@ func (s *Server) handleChangePasswordSubmit(ui roleUI) http.HandlerFunc {
 		// Preserve Pending2FA from the old session — a 2FA-enrolled account whose password was
 		// just reset still has to verify its second factor next, not skip straight to homePath.
 		s.sessions.Revoke(c.Value)
-		token := s.sessions.Create(ui.role, sess.Username, auth.SessionFlags{Pending2FA: sess.Pending2FA})
+		token := s.sessions.Create(sess.Role, sess.Username, auth.SessionFlags{Pending2FA: sess.Pending2FA})
 		http.SetCookie(w, &http.Cookie{
 			Name:     ui.cookieName,
 			Value:    token,
@@ -246,7 +249,7 @@ func (s *Server) handleTOTPVerifySubmit(ui roleUI) http.HandlerFunc {
 			return
 		}
 		sess, ok := s.sessions.Check(c.Value)
-		if !ok || sess.Role != ui.role {
+		if !ok || !sess.Role.Satisfies(ui.role) {
 			http.Redirect(w, r, ui.loginPath, http.StatusSeeOther)
 			return
 		}
@@ -261,7 +264,7 @@ func (s *Server) handleTOTPVerifySubmit(ui roleUI) http.HandlerFunc {
 		}
 
 		s.sessions.Revoke(c.Value)
-		token := s.sessions.Create(ui.role, sess.Username, auth.SessionFlags{})
+		token := s.sessions.Create(sess.Role, sess.Username, auth.SessionFlags{})
 		http.SetCookie(w, &http.Cookie{
 			Name:     ui.cookieName,
 			Value:    token,

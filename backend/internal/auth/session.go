@@ -11,10 +11,10 @@ import (
 	"time"
 )
 
-// Role identifies which login gate a session was created by. Roles are independent — holding one
-// never grants another. RoleManager is the full building-manager tier (status + wake-mode
-// control); RoleViewer is a read-only subset (status only, no controls) for front-desk staff who
-// don't need or shouldn't have write access.
+// Role is an account's access level. Roles form a hierarchy, highest first: admin, then manager,
+// then viewer — each one can do everything the ones below it can. An admin account can log into
+// /admin, /manager, or /dashboard with the same credentials; a manager account can log into
+// /manager or /dashboard; a viewer account can only log into /dashboard.
 type Role string
 
 const (
@@ -22,6 +22,21 @@ const (
 	RoleManager Role = "manager"
 	RoleViewer  Role = "viewer"
 )
+
+// roleRank orders the hierarchy — higher number outranks lower.
+var roleRank = map[Role]int{
+	RoleViewer:  1,
+	RoleManager: 2,
+	RoleAdmin:   3,
+}
+
+// Satisfies reports whether r is at least as privileged as required — e.g.
+// RoleAdmin.Satisfies(RoleManager) is true, RoleViewer.Satisfies(RoleManager) is false. An
+// unrecognized role satisfies nothing (rank 0), so a typo'd config.User.Role fails closed rather
+// than silently granting access.
+func (r Role) Satisfies(required Role) bool {
+	return roleRank[r] >= roleRank[required]
+}
 
 type sessionEntry struct {
 	role     Role
