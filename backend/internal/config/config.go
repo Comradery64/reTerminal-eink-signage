@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/calendar"
 )
 
 type Config struct {
@@ -19,7 +22,34 @@ type Config struct {
 	Google       GoogleConfig   `yaml:"google"`
 	Alerts       AlertConfig    `yaml:"alerts"`
 	Firmware     FirmwareConfig `yaml:"firmware"`
+	Auth         AuthConfig     `yaml:"auth"`
 	Rooms        []Room         `yaml:"rooms"`
+	Users        []User         `yaml:"users"`
+}
+
+// AuthConfig holds settings shared across every login on the /admin, /manager, and /receptionist
+// web UIs. Individual accounts live in Users, not here (see User) — this only holds the
+// session-signing sanity check.
+type AuthConfig struct {
+	// SessionSecret isn't used for cryptographic signing (sessions are server-side, keyed by an
+	// opaque crypto/rand token — see internal/auth) — requiring it here is a deploy-time sanity
+	// check that a real secrets bundle was provisioned before login is enabled, not left as an
+	// accidental default. Required (>=32 bytes) if any User is configured.
+	SessionSecret string `yaml:"session_secret"`
+}
+
+// User is one named login account for the /admin, /manager, or /receptionist web UIs — granting
+// or revoking an employee's access means adding/editing/removing their User entry, normally done
+// through /admin's Access panel (config.WithUser/WithoutUser), not by hand-editing YAML after the
+// first bootstrap admin account. Role gates which of the three doors (see internal/server/login.go
+// roleUI) the account can log into: "admin" (full config surface), "manager" (status + wake-mode
+// control), or "receptionist" (status only, read-only). PasswordSHA256 follows the same hash
+// pattern as Room.TokenSHA256 — not a slow salted hash, since these are IT-issued/rotated
+// credentials, not end-user passwords chosen under attacker-guessable conditions.
+type User struct {
+	Username       string `yaml:"username"`
+	PasswordSHA256 string `yaml:"password_sha256"`
+	Role           string `yaml:"role"` // "admin" | "manager" | "receptionist"
 }
 
 // FirmwareConfig drives OTA. The broker advertises Version+URL to devices via response headers;
@@ -45,11 +75,27 @@ type AlertConfig struct {
 }
 
 type WakeConfig struct {
+	// Mode is the fleet-wide default wake strategy — "flat" (fixed interval, grid-aligned) or
+	// "smart" (calendar-driven: wake only when the room's displayed status would actually
+	// change, plus a periodic safety-net check-in). A per-room Room.WakeMode overrides this.
+	// Empty ("") behaves as "flat" — an explicit opt-in is required for smart mode so existing
+	// deployments don't change behavior on upgrade.
+	Mode string `yaml:"mode"`
+
+	// BusinessHoursSeconds serves two roles depending on mode: in "flat" mode it's the fixed
+	// grid-aligned check-in interval during business hours; in "smart" mode it's both the
+	// periodic safety-net interval (when nothing is on the calendar) and the hard cap on how
+	// long to sleep even when a next transition is known further out — meetings get
+	// created/moved/cancelled live during the day, so business hours never fully trusts the
+	// calendar the way off-hours does.
 	BusinessHoursSeconds uint32 `yaml:"business_hours_seconds"`
-	OffHoursSeconds      uint32 `yaml:"off_hours_seconds"`
-	BusinessStartHour    int    `yaml:"business_start_hour"`
-	BusinessEndHour      int    `yaml:"business_end_hour"`
-	Timezone             string `yaml:"timezone"`
+	// OffHoursSeconds is the "flat" mode off-hours interval. Unused in "smart" mode: off-hours
+	// there is uncapped — sleep until the next known event, or straight through to the next
+	// business-hours start if nothing is scheduled.
+	OffHoursSeconds   uint32 `yaml:"off_hours_seconds"`
+	BusinessStartHour int    `yaml:"business_start_hour"`
+	BusinessEndHour   int    `yaml:"business_end_hour"`
+	Timezone          string `yaml:"timezone"`
 
 	// ForcedRefreshHour: local hour (0-23) at which each device gets one unconditional full-panel
 	// repaint per day, even if the room schedule hasn't changed. E-ink retains a faint bias from
@@ -80,6 +126,14 @@ type Room struct {
 	Name        string `yaml:"name"`
 	Room        string `yaml:"room"`
 	TokenSHA256 string `yaml:"token_sha256"`
+
+	// WakeMode overrides WakeConfig.Mode for this room only — e.g. a room whose occupant just
+	// wants a plain 15-min check-in without calendar-driven scheduling. nil = use fleet default.
+	WakeMode *string `yaml:"wake_mode,omitempty"`
+	// FlatIntervalSeconds overrides the fixed check-in interval when this room's effective mode
+	// is "flat" — grid-aligned regardless of business/off hours. nil = use the fleet's
+	// business/off-hours split (WakeConfig.BusinessHoursSeconds/OffHoursSeconds).
+	FlatIntervalSeconds *uint32 `yaml:"flat_interval_seconds,omitempty"`
 }
 
 var envRef = regexp.MustCompile(`\$\{([A-Z0-9_]+)\}`)
@@ -100,7 +154,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 	c.applyDefaults()
-	if err := c.validate(); err != nil {
+	if err := c.Validate(); err != nil {
 		return nil, err
 	}
 	return &c, nil
@@ -144,7 +198,11 @@ func (c *Config) applyDefaults() {
 	}
 }
 
-func (c *Config) validate() error {
+// Validate checks the config for internal consistency. It's called once at Load time, and again
+// on every admin/manager write (see WithRoom, WithoutRoom, WithRoomWakeOverride) so a bad edit
+// from the web UI can never produce an in-memory or persisted config that would fail to load on
+// the next restart.
+func (c *Config) Validate() error {
 	if c.Provider != "google" && c.Provider != "demo" {
 		return fmt.Errorf("provider must be 'google' or 'demo', got %q", c.Provider)
 	}
@@ -163,12 +221,57 @@ func (c *Config) validate() error {
 		if len(r.TokenSHA256) != 64 {
 			return fmt.Errorf("room %q: token_sha256 must be 64 hex chars", r.DeviceID)
 		}
+		if r.WakeMode != nil && !validWakeMode(*r.WakeMode) {
+			return fmt.Errorf("room %q: wake_mode must be '', 'flat', or 'smart', got %q", r.DeviceID, *r.WakeMode)
+		}
 	}
 	if _, err := time.LoadLocation(c.Wake.Timezone); err != nil {
 		return fmt.Errorf("invalid timezone %q: %w", c.Wake.Timezone, err)
 	}
 	if h := c.Wake.ForcedRefreshHour; h != nil && (*h < 0 || *h > 23) {
 		return fmt.Errorf("wake.forced_refresh_hour must be 0-23, got %d", *h)
+	}
+	if !validWakeMode(c.Wake.Mode) {
+		return fmt.Errorf("wake.mode must be '', 'flat', or 'smart', got %q", c.Wake.Mode)
+	}
+	if err := c.validateUsers(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *Config) validateUsers() error {
+	if len(c.Users) == 0 {
+		return nil // login disabled entirely — fails closed, not an error
+	}
+	if len(c.Auth.SessionSecret) < 32 {
+		return fmt.Errorf("auth.session_secret must be set (>=32 bytes) when any user is configured")
+	}
+	seenUsername := map[string]bool{}
+	hasAdmin := false
+	for i, u := range c.Users {
+		if u.Username == "" {
+			return fmt.Errorf("user[%d]: username is required", i)
+		}
+		key := strings.ToLower(u.Username)
+		if seenUsername[key] {
+			return fmt.Errorf("duplicate username %q (usernames are case-insensitive)", u.Username)
+		}
+		seenUsername[key] = true
+		if len(u.PasswordSHA256) != 64 {
+			return fmt.Errorf("user %q: password_sha256 must be 64 hex chars", u.Username)
+		}
+		if !validUserRole(u.Role) {
+			return fmt.Errorf("user %q: role must be 'admin', 'manager', or 'receptionist', got %q", u.Username, u.Role)
+		}
+		if u.Role == "admin" {
+			hasAdmin = true
+		}
+	}
+	// Without this, deleting/demoting the last admin through /admin would lock every future
+	// change out of the UI — the only remaining fix would be hand-editing the ConfigMap.
+	if !hasAdmin {
+		return fmt.Errorf("at least one user must have role 'admin'")
 	}
 	return nil
 }
@@ -179,15 +282,286 @@ func (c *Config) Location() *time.Location {
 	return loc
 }
 
-// NextWakeSeconds returns the recommended sleep duration for a device given the wall clock now.
-func (c *Config) NextWakeSeconds(now time.Time) uint32 {
-	now = now.In(c.Location())
-	h := now.Hour()
-	wd := now.Weekday()
-	business := wd != time.Saturday && wd != time.Sunday &&
-		h >= c.Wake.BusinessStartHour && h < c.Wake.BusinessEndHour
-	if business {
+// RoomByDeviceID finds a room's config by device ID — a linear scan is fine at fleet sizes this
+// project targets (see poller.go's own bounded-fan-out comment).
+func (c *Config) RoomByDeviceID(deviceID string) (Room, bool) {
+	for _, r := range c.Rooms {
+		if r.DeviceID == deviceID {
+			return r, true
+		}
+	}
+	return Room{}, false
+}
+
+// WithRoom returns a deep copy of c with room updated.DeviceID replaced (if it already exists) or
+// appended (if deviceID is new), validated before being returned. This is the only way the
+// admin UI's room add/edit forms mutate config — callers never touch c.Rooms directly, so a bad
+// edit can't reach Live.Store without first failing Validate.
+func (c *Config) WithRoom(updated Room) (*Config, error) {
+	next := c.clone()
+	replaced := false
+	for i, r := range next.Rooms {
+		if r.DeviceID == updated.DeviceID {
+			next.Rooms[i] = updated
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		next.Rooms = append(next.Rooms, updated)
+	}
+	if err := next.Validate(); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+// WithoutRoom returns a deep copy of c with room deviceID removed, validated before being
+// returned (e.g. rejects deleting the last remaining room).
+func (c *Config) WithoutRoom(deviceID string) (*Config, error) {
+	next := c.clone()
+	out := make([]Room, 0, len(next.Rooms))
+	for _, r := range next.Rooms {
+		if r.DeviceID != deviceID {
+			out = append(out, r)
+		}
+	}
+	next.Rooms = out
+	if err := next.Validate(); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+// WithRoomWakeOverride returns a deep copy of c with room deviceID's WakeMode/FlatIntervalSeconds
+// overridden, validated before being returned. This is the only write the /manager UI performs.
+func (c *Config) WithRoomWakeOverride(deviceID string, mode *string, flatSeconds *uint32) (*Config, error) {
+	next := c.clone()
+	found := false
+	for i, r := range next.Rooms {
+		if r.DeviceID == deviceID {
+			next.Rooms[i].WakeMode = mode
+			next.Rooms[i].FlatIntervalSeconds = flatSeconds
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("room %q not found", deviceID)
+	}
+	if err := next.Validate(); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+// WithWake returns a deep copy of c with the fleet-wide wake defaults replaced, validated before
+// being returned. Used by the admin UI's wake-defaults form.
+func (c *Config) WithWake(w WakeConfig) (*Config, error) {
+	next := c.clone()
+	next.Wake = w
+	if err := next.Validate(); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+// WithAlerts returns a deep copy of c with AlertConfig replaced, validated before being returned.
+func (c *Config) WithAlerts(a AlertConfig) (*Config, error) {
+	next := c.clone()
+	next.Alerts = a
+	if err := next.Validate(); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+// WithFirmware returns a deep copy of c with FirmwareConfig replaced, validated before being
+// returned.
+func (c *Config) WithFirmware(f FirmwareConfig) (*Config, error) {
+	next := c.clone()
+	next.Firmware = f
+	if err := next.Validate(); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+// WithUser returns a deep copy of c with a user matching updated.Username (case-insensitive)
+// replaced, or appended if new, validated before being returned. This is the only way /admin's
+// Access panel grants or edits an employee's login — callers never touch c.Users directly.
+// updated.PasswordSHA256 must always be set by the caller (on edit-without-changing-password,
+// the caller is responsible for carrying the existing hash forward, mirroring WithRoom's token
+// handling in internal/server/admin.go).
+func (c *Config) WithUser(updated User) (*Config, error) {
+	next := c.clone()
+	replaced := false
+	for i, u := range next.Users {
+		if strings.EqualFold(u.Username, updated.Username) {
+			next.Users[i] = updated
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		next.Users = append(next.Users, updated)
+	}
+	if err := next.Validate(); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+// WithoutUser returns a deep copy of c with the user matching username (case-insensitive)
+// removed, validated before being returned (e.g. rejects removing the last admin account).
+func (c *Config) WithoutUser(username string) (*Config, error) {
+	next := c.clone()
+	out := make([]User, 0, len(next.Users))
+	for _, u := range next.Users {
+		if !strings.EqualFold(u.Username, username) {
+			out = append(out, u)
+		}
+	}
+	next.Users = out
+	if err := next.Validate(); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+// UserByUsername finds a user's config by username, case-insensitive.
+func (c *Config) UserByUsername(username string) (User, bool) {
+	for _, u := range c.Users {
+		if strings.EqualFold(u.Username, username) {
+			return u, true
+		}
+	}
+	return User{}, false
+}
+
+// clone returns a shallow struct copy of c with Rooms and Users deep-copied into fresh slices, so
+// mutating the copy's slices (element replacement or append) never aliases the original's backing
+// array. Per-room pointer fields (WakeMode, FlatIntervalSeconds) are replaced wholesale by callers
+// above rather than mutated in place, so copying the pointers themselves is safe.
+func (c *Config) clone() *Config {
+	next := *c
+	next.Rooms = append([]Room(nil), c.Rooms...)
+	next.Users = append([]User(nil), c.Users...)
+	return &next
+}
+
+func validWakeMode(m string) bool {
+	return m == "" || m == "flat" || m == "smart"
+}
+
+func validUserRole(r string) bool {
+	return r == "admin" || r == "manager" || r == "receptionist"
+}
+
+// wakeModeFor resolves the effective wake mode for a room: its own override if set, else the
+// fleet default, else "flat" — an explicit "smart" opt-in is required so existing deployments
+// don't change behavior on upgrade.
+func (c *Config) wakeModeFor(room Room) string {
+	if room.WakeMode != nil && *room.WakeMode != "" {
+		return *room.WakeMode
+	}
+	if c.Wake.Mode != "" {
+		return c.Wake.Mode
+	}
+	return "flat"
+}
+
+// TEMPORARY (2026-07-19): weekday restriction below is disabled for weekend testing —
+// REVERT after testing by restoring `wd != time.Saturday && wd != time.Sunday &&` below.
+//
+// isBusinessHours reports whether now (any timezone) falls within the configured business
+// window in the fleet's local timezone. Shared by both wake modes so they never disagree about
+// what counts as "business hours".
+func (c *Config) isBusinessHours(now time.Time) bool {
+	h := now.In(c.Location()).Hour()
+	return h >= c.Wake.BusinessStartHour && h < c.Wake.BusinessEndHour
+}
+
+// NextWakeDuration returns how long device room's owner should sleep, given its effective wake
+// mode and (for smart mode) the calendar state resolved by the poller. cur/next may be up to
+// PollInterval stale as *which* events they point to, but the events' own Start/End timestamps
+// are exact calendar data — recomputing the duration against a fresh `now` here is always
+// correct even though the snapshot was taken up to PollInterval ago.
+func (c *Config) NextWakeDuration(room Room, cur, next *calendar.Event, now time.Time) uint32 {
+	if c.wakeModeFor(room) == "smart" {
+		return c.smartWakeSeconds(cur, next, now)
+	}
+	return c.flatWakeSeconds(room, now)
+}
+
+// flatWakeSeconds is the fixed-interval, grid-aligned strategy — lands on a fixed clock grid
+// (e.g. :00/:15/:30/:45 for a 900s interval, offset by gridOffsetSeconds) rather than counting
+// forward from whenever this particular device last checked in, so every device converges on the
+// same wall-clock wake times and a device that missed a wake rejoins the same grid next time.
+func (c *Config) flatWakeSeconds(room Room, now time.Time) uint32 {
+	local := now.In(c.Location())
+	if room.FlatIntervalSeconds != nil && *room.FlatIntervalSeconds > 0 {
+		return secondsUntilNextBoundary(local, *room.FlatIntervalSeconds)
+	}
+	interval := c.Wake.OffHoursSeconds
+	if c.isBusinessHours(now) {
+		interval = c.Wake.BusinessHoursSeconds
+	}
+	return secondsUntilNextBoundary(local, interval)
+}
+
+// smartWakeSeconds wakes only when the room's displayed status would actually change (per
+// calendar.NextTransitionAt), with a business-hours safety-net cap (meetings get
+// created/moved/cancelled live during the day) and no cap off-hours (trusting the calendar,
+// since off-hours activity is rare) — falling back to a periodic check or a sleep-through to the
+// next business-hours start when nothing is on the calendar at all.
+func (c *Config) smartWakeSeconds(cur, next *calendar.Event, now time.Time) uint32 {
+	business := c.isBusinessHours(now)
+
+	transitionAt, ok := calendar.NextTransitionAt(cur, next, now)
+	if !ok {
+		if business {
+			return c.Wake.BusinessHoursSeconds // periodic safety-net check-in; cheap if unchanged
+		}
+		return secondsUntilBusinessHoursStart(now.In(c.Location()), c.Wake.BusinessStartHour)
+	}
+
+	dur := transitionAt.Sub(now)
+	if dur < 0 {
+		dur = 0
+	}
+	if business && uint32(dur.Seconds()) > c.Wake.BusinessHoursSeconds {
 		return c.Wake.BusinessHoursSeconds
 	}
-	return c.Wake.OffHoursSeconds
+	return uint32(dur.Seconds())
+}
+
+// secondsUntilBusinessHoursStart returns the duration until the next occurrence of
+// businessStartHour:00 in local's timezone (today if not yet past that hour, else tomorrow).
+func secondsUntilBusinessHoursStart(local time.Time, businessStartHour int) uint32 {
+	next := time.Date(local.Year(), local.Month(), local.Day(), businessStartHour, 0, 0, 0, local.Location())
+	if !next.After(local) {
+		next = next.AddDate(0, 0, 1)
+	}
+	return uint32(next.Sub(local).Seconds())
+}
+
+// gridOffsetSeconds shifts the wake grid 5 minutes past each boundary (e.g. :05/:20/:35/:50 for a
+// 900s interval instead of :00/:15/:30/:45) so a check-in trails a meeting's start/end time rather
+// than racing it — calendar events conventionally start exactly on the hour/quarter-hour, and a
+// device waking at the identical instant risks reading the schedule right at the edge of a
+// transition.
+const gridOffsetSeconds = 5 * 60
+
+// secondsUntilNextBoundary returns how long until the next multiple of intervalSeconds since the
+// Unix epoch, shifted by gridOffsetSeconds — e.g. interval=900 lands on :05/:20/:35/:50 past the
+// hour (in any timezone with a whole-hour UTC offset, which covers every zone this fleet runs in).
+func secondsUntilNextBoundary(now time.Time, intervalSeconds uint32) uint32 {
+	if intervalSeconds == 0 {
+		return 0
+	}
+	interval := int64(intervalSeconds)
+	epoch := now.Unix() - gridOffsetSeconds
+	next := (epoch/interval + 1) * interval
+	return uint32(next + gridOffsetSeconds - now.Unix())
 }

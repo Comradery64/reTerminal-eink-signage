@@ -46,6 +46,18 @@ func main() {
 			ev("Standup", 8, 15, false),
 			ev("Customer call", 60, 45, false),
 		}}},
+		// Nothing left today; the only upcoming event is tomorrow morning (poll window spans
+		// today+tomorrow). Regression check for the day-abbreviation fix — without it, this looked
+		// like a same-day meeting on a day with nothing actually scheduled.
+		{"preview-nextday.png", &calendar.Schedule{RoomName: "Dogwood", FetchedAt: now, Events: []calendar.Event{
+			ev("Team offsite prep", 1200, 60, false),
+		}}},
+		// Current meeting ends in 3 min (inside calendar.BackToBackWindow) with another meeting
+		// starting immediately after — the "Next: ..." preview line should appear.
+		{"preview-backtoback.png", &calendar.Schedule{RoomName: "Elm", FetchedAt: now, Events: []calendar.Event{
+			ev("Sprint retro", -27, 30, false),
+			ev("Roadmap sync", 3, 45, false),
+		}}},
 	}
 
 	for _, sc := range scenarios {

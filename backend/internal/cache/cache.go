@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/calendar"
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/render"
 )
 
@@ -14,6 +15,12 @@ type Entry struct {
 	ETag       string // quoted hex CRC32, ready for the ETag header
 	RenderedAt time.Time
 	Err        error // last poll error, if the room is currently failing
+
+	// Cur/Next are the calendar.Schedule.Current/Next results as resolved by the poller at
+	// RenderedAt — up to PollInterval stale as *which* events they point to, but the events'
+	// own Start/End timestamps are exact, so the HTTP handler can recompute an accurate smart
+	// wake duration against a fresh `now` without re-fetching the calendar per-request.
+	Cur, Next *calendar.Event
 
 	// LastForcedRefreshDay is the local "YYYY-MM-DD" this device last received its once-daily
 	// forced full repaint (see Store.ShouldForceFullRefresh). Empty if never forced.

@@ -3,7 +3,7 @@
   "uid": "meeting-displays-fleet",
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "editable": true,
   "graphTooltip": 1,
   "time": { "from": "now-6h", "to": "now" },
@@ -16,17 +16,6 @@
         "type": "datasource",
         "query": "prometheus",
         "current": {}
-      },
-      {
-        "name": "device",
-        "type": "query",
-        "datasource": { "type": "prometheus", "uid": "${datasource}" },
-        "query": { "query": "label_values(md_last_seen_seconds, device)", "refId": "device" },
-        "refresh": 2,
-        "sort": 1,
-        "multi": true,
-        "includeAll": true,
-        "current": { "text": "All", "value": "$__all" }
       }
     ]
   },
@@ -42,224 +31,190 @@
     {
       "id": 2,
       "type": "stat",
-      "title": "Devices low on battery",
-      "description": "Count of devices at/below the low-battery alert threshold (matches DisplayBatteryLow in alerts.yaml and the broker's alerts.low_battery_pct).",
+      "title": "Fleet size",
+      "description": "Total devices that have ever reported in.",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
-      "targets": [
-        { "expr": "count(md_battery_percent < 45) OR vector(0)", "legendFormat": "low battery", "refId": "A" }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "orange", "value": 1 }
-            ]
-          }
-        }
-      }
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "targets": [{ "expr": "count(md_last_seen_seconds)", "instant": true, "refId": "A" }],
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] } } }
     },
     {
       "id": 3,
       "type": "stat",
-      "title": "Stale devices (>1h since last report)",
-      "description": "Matches DisplayStale in alerts.yaml (3600s) and the broker's alerts.stale_after used by /api/v1/status.",
+      "title": "In a meeting now",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
-      "targets": [
-        { "expr": "count(md_last_seen_seconds > 3600) OR vector(0)", "legendFormat": "stale", "refId": "A" }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 1 }
-            ]
-          }
-        }
-      }
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "targets": [{ "expr": "count(md_room_status_info{status=\"in_meeting\"}) OR vector(0)", "instant": true, "refId": "A" }],
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }] } } }
     },
     {
       "id": 4,
       "type": "stat",
-      "title": "Devices not repainting (>1h since last render)",
-      "description": "md_last_render_seconds ages only on rendered=true, so this catches a device that's still checking in but stuck on the same frame — a hardware/ghosting smell test that last_seen alone can't see.",
+      "title": "Available now",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
-      "targets": [
-        { "expr": "count(md_last_render_seconds > 3600) OR vector(0)", "legendFormat": "no recent render", "refId": "A" }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "orange", "value": 1 }
-            ]
-          }
-        }
-      }
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "targets": [{ "expr": "count(md_room_status_info{status=\"available\"}) OR vector(0)", "instant": true, "refId": "A" }],
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } } }
     },
     {
       "id": 5,
       "type": "stat",
-      "title": "Fleet size",
+      "title": "Low battery",
+      "description": "Below the low_battery_pct alert threshold (config.yaml alerts.low_battery_pct).",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
-      "targets": [
-        { "expr": "count(md_last_seen_seconds)", "legendFormat": "devices", "refId": "A" }
-      ]
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+      "targets": [{ "expr": "count(md_battery_percent < 45) OR vector(0)", "instant": true, "refId": "A" }],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
+        }
+      }
     },
     {
       "id": 6,
+      "type": "stat",
+      "title": "Offline (>1h)",
+      "description": "No telemetry report in over an hour (alerts.stale_after).",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+      "targets": [{ "expr": "count(md_last_seen_seconds > 3600) OR vector(0)", "instant": true, "refId": "A" }],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Not repainting (>1h)",
+      "description": "Panel hasn't actually refreshed in over an hour — checking in but not repainting is a ghosting/hardware-health smell, not just a schedule quirk.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
+      "targets": [{ "expr": "count(md_last_render_seconds > 3600) OR vector(0)", "instant": true, "refId": "A" }],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 1 }] }
+        }
+      }
+    },
+    {
+      "id": 8,
       "type": "row",
-      "title": "Room: $device",
+      "title": "All devices",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
       "collapsed": false,
-      "repeat": "device",
-      "repeatDirection": "v",
-      "panels": [
+      "panels": []
+    },
+    {
+      "id": 9,
+      "type": "table",
+      "title": "Fleet status",
+      "description": "One row per device: what it's currently displaying, battery, signal, and staleness — everything a building manager needs at a glance. Sort/filter any column by clicking its header.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 6 },
+      "targets": [
+        { "expr": "md_room_status_info", "format": "table", "instant": true, "refId": "status" },
+        { "expr": "md_battery_percent", "format": "table", "instant": true, "refId": "battery" },
+        { "expr": "md_wifi_rssi_dbm", "format": "table", "instant": true, "refId": "signal" },
+        { "expr": "md_last_seen_seconds", "format": "table", "instant": true, "refId": "lastseen" },
+        { "expr": "md_last_render_seconds", "format": "table", "instant": true, "refId": "lastrender" },
+        { "expr": "md_boot_count", "format": "table", "instant": true, "refId": "boots" }
+      ],
+      "transformations": [
         {
-          "id": 60,
-          "type": "gauge",
-          "title": "Battery",
-          "description": "md_battery_millivolts is available as the raw mV reading in a tooltip on hover — the %→V map is nonlinear near the low end, so treat the percent as approximate.",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 6, "w": 6, "x": 0, "y": 6 },
-          "targets": [
-            { "expr": "md_battery_percent{device=\"$device\"}", "legendFormat": "{{device}}", "refId": "A" },
-            { "expr": "md_battery_millivolts{device=\"$device\"}", "legendFormat": "{{device}} mV", "refId": "B", "hide": true }
-          ],
-          "fieldConfig": {
-            "defaults": {
-              "unit": "percent",
-              "min": 0,
-              "max": 100,
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  { "color": "red", "value": null },
-                  { "color": "orange", "value": 45 },
-                  { "color": "green", "value": 55 }
-                ]
-              }
+          "id": "joinByField",
+          "options": { "byField": "device", "mode": "outer" }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true, "Time 1": true, "Time 2": true, "Time 3": true, "Time 4": true, "Time 5": true,
+              "__name__": true, "__name__ 1": true, "__name__ 2": true, "__name__ 3": true, "__name__ 4": true, "__name__ 5": true,
+              "job": true, "instance": true, "Value #status": true
+            },
+            "indexByName": {
+              "device": 0, "status": 1,
+              "Value #battery": 2, "Value #signal": 3,
+              "Value #lastseen": 4, "Value #lastrender": 5, "Value #boots": 6
+            },
+            "renameByName": {
+              "device": "Room",
+              "status": "Status",
+              "Value #battery": "Battery %",
+              "Value #signal": "Signal (dBm)",
+              "Value #lastseen": "Last seen (s ago)",
+              "Value #lastrender": "Last refresh (s ago)",
+              "Value #boots": "Boot count"
             }
           }
-        },
-        {
-          "id": 61,
-          "type": "stat",
-          "title": "Availability (last check-in)",
-          "description": "Matches DisplayStale's 3600s threshold in alerts.yaml.",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 6, "w": 6, "x": 6, "y": 6 },
-          "targets": [
-            { "expr": "md_last_seen_seconds{device=\"$device\"}", "legendFormat": "{{device}}", "refId": "A" }
-          ],
-          "fieldConfig": {
-            "defaults": {
-              "unit": "s",
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  { "color": "green", "value": null },
-                  { "color": "orange", "value": 900 },
-                  { "color": "red", "value": 3600 }
-                ]
-              }
-            }
-          }
-        },
-        {
-          "id": 62,
-          "type": "stat",
-          "title": "Last screen refresh",
-          "description": "Age since the device last reported rendered=true — how long since the panel actually repainted, not just checked in.",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 6, "w": 6, "x": 12, "y": 6 },
-          "targets": [
-            { "expr": "md_last_render_seconds{device=\"$device\"}", "legendFormat": "{{device}}", "refId": "A" }
-          ],
-          "fieldConfig": {
-            "defaults": {
-              "unit": "s",
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  { "color": "green", "value": null },
-                  { "color": "orange", "value": 3600 },
-                  { "color": "red", "value": 86400 }
-                ]
-              }
-            }
-          }
-        },
-        {
-          "id": 63,
-          "type": "gauge",
-          "title": "Signal",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 6, "w": 6, "x": 18, "y": 6 },
-          "targets": [
-            { "expr": "md_wifi_rssi_dbm{device=\"$device\"}", "legendFormat": "{{device}}", "refId": "A" }
-          ],
-          "fieldConfig": {
-            "defaults": {
-              "unit": "dBm",
-              "min": -100,
-              "max": -30,
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  { "color": "red", "value": null },
-                  { "color": "orange", "value": -75 },
-                  { "color": "green", "value": -65 }
-                ]
-              }
-            }
-          }
-        },
-        {
-          "id": 64,
-          "type": "stat",
-          "title": "Boot count (reboot-loop smell test)",
-          "description": "A device rebooting far more often than its wake cadence implies is crashing, not sleeping.",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 6, "w": 8, "x": 0, "y": 12 },
-          "targets": [
-            { "expr": "md_boot_count{device=\"$device\"}", "legendFormat": "{{device}}", "refId": "A" }
-          ]
-        },
-        {
-          "id": 65,
-          "type": "stat",
-          "title": "Room temperature",
-          "description": "Only reported by devices with the optional SHT4x sensor populated.",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 6, "w": 8, "x": 8, "y": 12 },
-          "targets": [
-            { "expr": "md_room_temp_celsius{device=\"$device\"}", "legendFormat": "{{device}}", "refId": "A" }
-          ],
-          "fieldConfig": { "defaults": { "unit": "celsius" } }
-        },
-        {
-          "id": 66,
-          "type": "stat",
-          "title": "Room humidity",
-          "description": "Only reported by devices with the optional SHT4x sensor populated.",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "h": 6, "w": 8, "x": 16, "y": 12 },
-          "targets": [
-            { "expr": "md_room_humidity_percent{device=\"$device\"}", "legendFormat": "{{device}}", "refId": "A" }
-          ],
-          "fieldConfig": { "defaults": { "unit": "percent" } }
         }
-      ]
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "align": "center", "cellOptions": { "type": "auto" } }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Room" },
+            "properties": [{ "id": "custom.align", "value": "left" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Status" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-background" } },
+              { "id": "mappings", "value": [
+                { "type": "value", "options": {
+                  "available":     { "text": "Available",     "color": "green" },
+                  "starting_soon": { "text": "Starting soon", "color": "orange" },
+                  "in_meeting":    { "text": "In a meeting",   "color": "red" }
+                } }
+              ] }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Battery %" },
+            "properties": [
+              { "id": "unit", "value": "percent" },
+              { "id": "custom.cellOptions", "value": { "type": "color-background" } },
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
+                { "color": "red", "value": null }, { "color": "orange", "value": 20 }, { "color": "green", "value": 45 }
+              ] } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Signal (dBm)" },
+            "properties": [
+              { "id": "unit", "value": "dBm" },
+              { "id": "custom.cellOptions", "value": { "type": "color-background" } },
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
+                { "color": "red", "value": null }, { "color": "orange", "value": -75 }, { "color": "green", "value": -65 }
+              ] } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Last seen (s ago)" },
+            "properties": [
+              { "id": "unit", "value": "s" },
+              { "id": "custom.cellOptions", "value": { "type": "color-background" } },
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
+                { "color": "green", "value": null }, { "color": "red", "value": 3600 }
+              ] } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Last refresh (s ago)" },
+            "properties": [
+              { "id": "unit", "value": "s" },
+              { "id": "custom.cellOptions", "value": { "type": "color-background" } },
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
+                { "color": "green", "value": null }, { "color": "orange", "value": 3600 }
+              ] } }
+            ]
+          }
+        ]
+      }
     }
   ]
 }
