@@ -253,6 +253,17 @@ spec:
     - host: displays.example.internal
       http:
         paths:
+          # Exact, not Prefix — this must match ONLY the bare "/", so it can't shadow the more
+          # specific rules below (Traefik doesn't have Go's ServeMux "longest match wins"
+          # semantics for two Prefix rules, so an accidental "/" Prefix rule here would swallow
+          # everything). The broker's own root handler (see internal/server/server.go) redirects
+          # this to /dashboard.
+          - path: /
+            pathType: Exact
+            backend:
+              service:
+                name: broker
+                port: { number: 80 }
           - path: /api/v1/display
             pathType: Prefix
             backend:
