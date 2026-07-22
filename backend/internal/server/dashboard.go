@@ -30,7 +30,7 @@ type dashboardPageView struct {
 // restart, looks identical to a genuinely broken device without this context.
 type dashboardRow struct {
 	status.Device
-	BatteryBar   string
+	BatteryBar   template.HTML
 	BatteryText  string // "78%", or "unknown" if this device has never reported — never blank, so
 	StatusLabel  string // every card reserves the same space for this row and the grid stays even
 	LastSeenText string
@@ -74,7 +74,7 @@ func (s *Server) handleDashboardPage(w http.ResponseWriter, r *http.Request) {
 
 	rows := make([]dashboardRow, 0, len(devices))
 	for _, d := range devices {
-		row := dashboardRow{Device: d, BatteryBar: batteryBar(d.BatteryPct), StatusLabel: friendlyStatusLabel(d.Status)}
+		row := dashboardRow{Device: d, BatteryBar: batteryGauge(d.BatteryPct), StatusLabel: friendlyStatusLabel(d.Status)}
 		if d.Status == "unreported" {
 			row.LastSeenText = "hasn't checked in yet"
 			row.BatteryText = "unknown"
@@ -164,7 +164,7 @@ var dashboardPageTmpl = template.Must(template.New("dashboard").Parse(`<!doctype
 <div class="card surface">
 <span class="chip chip-{{.Status}}">{{.StatusLabel}}</span>
 <h2>{{.Name}}</h2>
-<p class="readout"><span class="bar">{{.BatteryBar}}</span> {{.BatteryText}}</p>
+<p class="readout">{{.BatteryBar}} {{.BatteryText}}</p>
 <dl class="checkin">
 <dt>last check-in:</dt>
 <dd>{{.LastSeenText}}</dd>

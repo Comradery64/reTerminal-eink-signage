@@ -17,7 +17,7 @@ type managerRow struct {
 	status.Device
 	WakeMode            string // "flat" or "smart" — resolved effective value, never empty
 	FlatIntervalSeconds uint32 // 0 if this room has no override and the fleet default applies
-	BatteryBar          string
+	BatteryBar          template.HTML
 }
 
 type managerPageData struct {
@@ -46,7 +46,7 @@ func (s *Server) handleManagerPage(w http.ResponseWriter, r *http.Request) {
 		}
 		rows = append(rows, managerRow{
 			Device: d, WakeMode: mode, FlatIntervalSeconds: interval,
-			BatteryBar: batteryBar(d.BatteryPct),
+			BatteryBar: batteryGauge(d.BatteryPct),
 		})
 	}
 
@@ -138,7 +138,7 @@ var managerPageTmpl = template.Must(template.New("manager").Parse(`<!doctype htm
 <span class="chip chip-{{.Status}}">{{.Status}}</span>
 <h2>{{.Name}}</h2>
 <p class="id mono">{{.DeviceID}}</p>
-<p class="readout"><span class="bar">{{.BatteryBar}}</span> {{.BatteryPct}}% &middot; seen {{.LastSeenSeconds}}s ago</p>
+<p class="readout">{{.BatteryBar}} {{.BatteryPct}}% &middot; seen {{.LastSeenSeconds}}s ago</p>
 <form class="wake-form" method="POST" action="/manager/wake/save">
 <input type="hidden" name="device_id" value="{{.DeviceID}}">
 <div class="segmented">
