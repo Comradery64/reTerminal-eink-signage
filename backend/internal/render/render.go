@@ -103,6 +103,24 @@ func (r *Renderer) drawStatusPanel(canvas *image.RGBA, cur, next *calendar.Event
 		total += 34
 	}
 	y := r.H/2 - total/2
+
+	// The loop below places each line's nominal ascent+descent box starting at y, but the box is
+	// generally taller than the actual glyph ink (e.g. an all-caps label has no descenders), so
+	// centering on the nominal box visibly off-centers the ink itself within the panel. Measure
+	// where the ink from the first and last visible lines would actually land at this y, and shift
+	// y so the true ink extent — not the nominal box — is centered on the panel.
+	firstTop, _ := big.inkExtent(lines[0])
+	lastTop := y + lineH*(len(lines)-1)
+	_, lastBottom := big.inkExtent(lines[len(lines)-1])
+	lastBottom += lastTop
+	if detail != "" {
+		detailY := y + lineH*len(lines) - 6
+		_, detailBottom := small.inkExtent(detail)
+		lastBottom = detailY + detailBottom
+	}
+	inkCenter := (y + firstTop + lastBottom) / 2
+	y += r.H/2 - inkCenter
+
 	for _, ln := range lines {
 		w := big.measure(ln)
 		drawBM(canvas, big, (statusPanelW-w)/2, y, ln, textCol)
