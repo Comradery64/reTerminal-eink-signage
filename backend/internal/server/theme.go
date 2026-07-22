@@ -6,6 +6,25 @@ package server
 // manages. Deliberately light-mode only — the physical displays have no backlit dark mode, and
 // these pages are meant to feel like an extension of them, not a typical SaaS console.
 const baseCSS = `
+/* Self-hosted (see internal/server/fonts.go + /assets/fonts route) so every page renders
+   identically with no external network dependency. Two subsets: latin covers ordinary text;
+   symbols covers the battery bar's block characters (█/░), which fall outside the latin range. */
+@font-face {
+  font-family: "Open Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/assets/fonts/OpenSans-Regular-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Open Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/assets/fonts/OpenSans-Regular-symbols.woff2") format("woff2");
+  unicode-range: U+2150-218F, U+2190, U+2192, U+2194-2199, U+21AF, U+21E6-21F0, U+21F3, U+2218-2219, U+2299, U+22C4-22C6, U+2300-243F, U+2440-244A, U+2460-24FF, U+25A0-27BF, U+2800-28FF;
+}
 :root {
   /* Palette: the fleet's actual E Ink Spectra-6 gamut, not a generic dashboard palette — every
      color here is one the physical panels can literally render, so status states are drawn from
@@ -35,10 +54,13 @@ const baseCSS = `
   --space-7: 3rem;
 
   /* Type scale, three families with fixed roles: display (headings, signage feel), body (UI
-     prose/labels), mono (device IDs, readouts, hardware data — never mixed into prose). */
+     prose/labels), mono (device IDs, readouts, hardware data — never mixed into prose). --font-mono
+     is no longer an actual monospace face (Open Sans is proportional) — the role/usage split is
+     kept as-is, only the typeface changed, so alignment-by-monospace (e.g. the battery bar) relies
+     on the block characters' fixed advance width rather than the font being monospace overall. */
   --font-display: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
   --font-body: -apple-system, "Segoe UI", system-ui, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+  --font-mono: "Open Sans", -apple-system, "Segoe UI", system-ui, sans-serif;
   --text-xs: .68rem;
   --text-sm: .78rem;
   --text-base: .92rem;
