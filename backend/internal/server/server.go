@@ -100,6 +100,9 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	// Static, unauthenticated font assets referenced by baseCSS — every login page needs these
+	// before any session exists, same trust boundary as /firmware's unauthenticated static serving.
+	mux.Handle("GET /assets/fonts/", http.StripPrefix("/assets/", http.FileServerFS(fontFS)))
 	// The root URL has no page of its own — send anyone who lands here straight to the most
 	// common front door (viewer dashboard) rather than a bare 404. "/{$}" matches only exact "/",
 	// never a subpath, so this can't shadow anything registered below.
