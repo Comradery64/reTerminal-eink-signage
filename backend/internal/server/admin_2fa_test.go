@@ -82,8 +82,8 @@ func TestTOTPSetupThenEnableStoresSecretAndRequiresCodeOnNextLogin(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := verifyResp.Header.Get("Location"); got != "/admin" {
-		t.Fatalf("verify-2fa with correct code: want redirect to /admin, got %q", got)
+	if got := verifyResp.Header.Get("Location"); got != "/dashboard" {
+		t.Fatalf("verify-2fa with correct code: want redirect to /dashboard, got %q", got)
 	}
 	if page, err := fresh.Get(srv.URL + "/admin"); err != nil || page.StatusCode != http.StatusOK {
 		t.Fatalf("GET /admin after verifying 2fa: err=%v code=%v", err, page)

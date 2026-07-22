@@ -224,8 +224,8 @@ func TestAdminLoginGrantsManagerAndViewerDoors(t *testing.T) {
 		if resp.StatusCode != http.StatusSeeOther {
 			t.Fatalf("admin logging into %s: want 303, got %d", ui.loginPath, resp.StatusCode)
 		}
-		if got := resp.Header.Get("Location"); got != ui.homePath {
-			t.Fatalf("admin logging into %s: want redirect to %s, got %q", ui.loginPath, ui.homePath, got)
+		if got := resp.Header.Get("Location"); got != viewerUI.homePath {
+			t.Fatalf("admin logging into %s: want redirect to %s (every login now lands on /dashboard), got %q", ui.loginPath, viewerUI.homePath, got)
 		}
 		page, err := client.Get(srv.URL + ui.homePath)
 		if err != nil || page.StatusCode != http.StatusOK {
@@ -257,5 +257,83 @@ func TestManagerLoginGrantsViewerDoor(t *testing.T) {
 	page, err := client.Get(srv.URL + viewerUI.homePath)
 	if err != nil || page.StatusCode != http.StatusOK {
 		t.Fatalf("manager session at /dashboard: err=%v code=%v", err, page)
+	}
+}
+
+// TestLoginAtAnyDoorReachesEveryDoorTheRoleSatisfies covers the actual feature: logging in once,
+// at any door, lands on /dashboard and also grants direct access to /manager and/or /admin (per
+// role) with no second login — the whole point of setSessionCookies.
+func TestLoginAtAnyDoorReachesEveryDoorTheRoleSatisfies(t *testing.T) {
+	s := testServerWithAuth(t)
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+
+	cases := []struct {
+		username, password string
+		loginPath           string
+		wantReachable       []string
+		wantBlocked         []string
+	}{
+		{testAdminUsername, testAdminPassword, adminUI.loginPath, []string{"/dashboard", "/manager", "/admin"}, nil},
+		{testManagerUsername, testManagerPassword, managerUI.loginPath, []string{"/dashboard", "/manager"}, []string{"/admin"}},
+		{testViewerUsername, testViewerPassword, viewerUI.loginPath, []string{"/dashboard"}, []string{"/manager", "/admin"}},
+	}
+	for _, c := range cases {
+		jar, _ := cookiejar.New(nil)
+		client := srv.Client()
+		client.Jar = jar
+		client.CheckRedirect = func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }
+
+		resp, err := client.PostForm(srv.URL+c.loginPath, url.Values{"username": {c.username}, "password": {c.password}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := resp.Header.Get("Location"); got != "/dashboard" {
+			t.Fatalf("%s logging into %s: want redirect to /dashboard, got %q", c.username, c.loginPath, got)
+		}
+		for _, path := range c.wantReachable {
+			page, err := client.Get(srv.URL + path)
+			if err != nil || page.StatusCode != http.StatusOK {
+				t.Fatalf("%s: GET %s should be reachable after logging in at %s: err=%v code=%v", c.username, path, c.loginPath, err, page)
+			}
+		}
+		for _, path := range c.wantBlocked {
+			page, err := client.Get(srv.URL + path)
+			if err != nil || page.StatusCode == http.StatusOK {
+				t.Fatalf("%s: GET %s should NOT be reachable after logging in at %s: err=%v code=%v", c.username, path, c.loginPath, err, page)
+			}
+		}
+	}
+}
+
+// TestLogoutFromAnyDoorInvalidatesAllDoors covers the flip side of the shared-token design: since
+// admin_session/manager_session/viewer_session all carry the same token after login, logging out
+// from one door (here, /manager) must not leave the others still authenticated.
+func TestLogoutFromAnyDoorInvalidatesAllDoors(t *testing.T) {
+	s := testServerWithAuth(t)
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+
+	jar, _ := cookiejar.New(nil)
+	client := srv.Client()
+	client.Jar = jar
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }
+
+	if _, err := client.PostForm(srv.URL+adminUI.loginPath, url.Values{"username": {testAdminUsername}, "password": {testAdminPassword}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/dashboard", "/manager", "/admin"} {
+		if page, err := client.Get(srv.URL + path); err != nil || page.StatusCode != http.StatusOK {
+			t.Fatalf("pre-logout GET %s: err=%v code=%v", path, err, page)
+		}
+	}
+
+	if _, err := client.Post(srv.URL+managerUI.homePath+"/logout", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/dashboard", "/manager", "/admin"} {
+		if page, err := client.Get(srv.URL + path); err != nil || page.StatusCode == http.StatusOK {
+			t.Fatalf("post-logout GET %s should be blocked: err=%v code=%v", path, err, page)
+		}
 	}
 }

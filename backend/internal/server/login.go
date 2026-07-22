@@ -11,9 +11,11 @@ import (
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/auth"
 )
 
-// roleUI bundles the per-role paths/cookie name a login flow needs. Every role is independently
-// configurable and independently gated — logging into one never grants another, enforced by
-// using a separate cookie scoped to each role's own path.
+// roleUI bundles the per-role paths/cookie name a login flow needs. Each role still gets its own
+// cookie scoped to its own path (so /admin, /manager, /dashboard each independently check the
+// caller actually holds that role), but a single login now grants every cookie the account's role
+// satisfies at once — see setSessionCookies — so signing in anywhere lands on /dashboard with
+// working links straight into /manager and/or /admin, no separate login per door.
 type roleUI struct {
 	role               auth.Role
 	label              string // display form of role, e.g. "Admin" — used in the sign-in heading
@@ -29,6 +31,43 @@ var (
 	managerUI = roleUI{role: auth.RoleManager, label: "Manager", cookieName: "manager_session", loginPath: "/manager/login", homePath: "/manager", changePasswordPath: "/manager/change-password", totpVerifyPath: "/manager/verify-2fa"}
 	viewerUI  = roleUI{role: auth.RoleViewer, label: "Viewer", cookieName: "viewer_session", loginPath: "/dashboard/login", homePath: "/dashboard", changePasswordPath: "/dashboard/change-password", totpVerifyPath: "/dashboard/verify-2fa"}
 )
+
+// setSessionCookies issues token as every role-scoped cookie the account's role satisfies (e.g.
+// an admin gets admin_session, manager_session, and viewer_session all at once). All three share
+// the same token, so revoking it from any one place (see handleLogout) invalidates the session
+// everywhere at once — there's only ever one underlying session per login, just multiple cookies
+// pointing at it.
+func setSessionCookies(w http.ResponseWriter, role auth.Role, token string) {
+	for _, ui := range []roleUI{viewerUI, managerUI, adminUI} {
+		if !role.Satisfies(ui.role) {
+			continue
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name:     ui.cookieName,
+			Value:    token,
+			Path:     ui.homePath,
+			HttpOnly: true,
+			Secure:   true,
+			SameSite: http.SameSiteStrictMode,
+		})
+	}
+}
+
+// clearSessionCookies removes every role-scoped cookie a shared session (see setSessionCookies)
+// may have set, regardless of which door is used to log out.
+func clearSessionCookies(w http.ResponseWriter) {
+	for _, ui := range []roleUI{viewerUI, managerUI, adminUI} {
+		http.SetCookie(w, &http.Cookie{
+			Name:     ui.cookieName,
+			Value:    "",
+			Path:     ui.homePath,
+			MaxAge:   -1,
+			HttpOnly: true,
+			Secure:   true,
+			SameSite: http.SameSiteStrictMode,
+		})
+	}
+}
 
 // requireRole gates next behind a valid session cookie for ui.role, redirecting to that role's
 // login page otherwise. Mirrors deviceAuth.verify's gating of handleDisplay/handleTelemetry, just
@@ -104,19 +143,15 @@ func (s *Server) handleLoginSubmit(ui roleUI) http.HandlerFunc {
 		// into /manager still reports Role: admin, and later Satisfies checks stay correct.
 		flags := auth.SessionFlags{MustChangePassword: result.MustChangePassword, Pending2FA: result.TOTPEnabled}
 		token := s.sessions.Create(result.Role, username, flags)
-		http.SetCookie(w, &http.Cookie{
-			Name:     ui.cookieName,
-			Value:    token,
-			Path:     ui.homePath,
-			HttpOnly: true,
-			Secure:   true,
-			SameSite: http.SameSiteStrictMode,
-		})
+		setSessionCookies(w, result.Role, token)
 
 		// MustChangePassword takes priority — an admin-chosen temporary password is resolved
 		// before anything else, including the second factor (handleChangePasswordSubmit reissues
 		// the session preserving Pending2FA, so a 2FA-enrolled account still verifies it next).
-		dest := ui.homePath
+		// The default landing spot is always /dashboard, not the door just logged into — every
+		// role satisfies viewer, and this is the one shared home every account lands on, with
+		// links into /manager and/or /admin from there as the role allows.
+		dest := viewerUI.homePath
 		switch {
 		case result.MustChangePassword:
 			dest = ui.changePasswordPath
@@ -132,17 +167,12 @@ func (s *Server) handleLoginSubmit(ui roleUI) http.HandlerFunc {
 func (s *Server) handleLogout(ui roleUI) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if c, err := r.Cookie(ui.cookieName); err == nil {
+			// Revoking the shared token here also invalidates the admin_session/manager_session
+			// cookies from the same login, even though this handler only clears cookies scoped to
+			// its own door below — Check() on any of them will fail from this point on.
 			s.sessions.Revoke(c.Value)
 		}
-		http.SetCookie(w, &http.Cookie{
-			Name:     ui.cookieName,
-			Value:    "",
-			Path:     ui.homePath,
-			MaxAge:   -1,
-			HttpOnly: true,
-			Secure:   true,
-			SameSite: http.SameSiteStrictMode,
-		})
+		clearSessionCookies(w)
 		http.Redirect(w, r, ui.loginPath, http.StatusSeeOther)
 	}
 }
@@ -209,15 +239,8 @@ func (s *Server) handleChangePasswordSubmit(ui roleUI) http.HandlerFunc {
 		// just reset still has to verify its second factor next, not skip straight to homePath.
 		s.sessions.Revoke(c.Value)
 		token := s.sessions.Create(sess.Role, sess.Username, auth.SessionFlags{Pending2FA: sess.Pending2FA})
-		http.SetCookie(w, &http.Cookie{
-			Name:     ui.cookieName,
-			Value:    token,
-			Path:     ui.homePath,
-			HttpOnly: true,
-			Secure:   true,
-			SameSite: http.SameSiteStrictMode,
-		})
-		dest := ui.homePath
+		setSessionCookies(w, sess.Role, token)
+		dest := viewerUI.homePath
 		if sess.Pending2FA {
 			dest = ui.totpVerifyPath
 		}
@@ -265,15 +288,8 @@ func (s *Server) handleTOTPVerifySubmit(ui roleUI) http.HandlerFunc {
 
 		s.sessions.Revoke(c.Value)
 		token := s.sessions.Create(sess.Role, sess.Username, auth.SessionFlags{})
-		http.SetCookie(w, &http.Cookie{
-			Name:     ui.cookieName,
-			Value:    token,
-			Path:     ui.homePath,
-			HttpOnly: true,
-			Secure:   true,
-			SameSite: http.SameSiteStrictMode,
-		})
-		http.Redirect(w, r, ui.homePath, http.StatusSeeOther)
+		setSessionCookies(w, sess.Role, token)
+		http.Redirect(w, r, viewerUI.homePath, http.StatusSeeOther)
 	}
 }
 

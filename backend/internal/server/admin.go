@@ -483,6 +483,8 @@ form button[type=submit]:not(.danger):not(.ghost) { margin-top: var(--space-4); 
 <nav class="rail">
 ` + brandMark + `
 <div class="links">
+<a href="/dashboard">Dashboard</a>
+<a href="/manager">Manager</a>
 <a href="#rooms">Rooms</a>
 <a href="#access">Access</a>
 <a href="#security">Security</a>

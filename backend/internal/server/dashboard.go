@@ -10,6 +10,16 @@ import (
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/status"
 )
 
+// dashboardPageView is the top-level template data: the room roster plus which nav links to show.
+// Every role satisfies viewer (see auth.Role.Satisfies), so /dashboard is the one page every
+// account lands on after login — ShowManager/ShowAdmin add the links into the higher-privilege
+// panels an account may also hold, in place of requiring a separate login at each door.
+type dashboardPageView struct {
+	Rows        []dashboardRow
+	ShowManager bool
+	ShowAdmin   bool
+}
+
 // dashboardRow is status-only — unlike managerRow, it carries no wake-mode fields, because this
 // role has no controls at all, just the same read-only roster /manager shows.
 //
@@ -86,8 +96,20 @@ func (s *Server) handleDashboardPage(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, row)
 	}
 
+	view := dashboardPageView{Rows: rows}
+	// Re-derive the role from the same cookie requireRole(viewerUI, ...) already validated to
+	// reach this handler at all — a fresh lookup here, rather than threading session state through
+	// requireRole, mirrors how handleChangePasswordSubmit/handleTOTPVerifySubmit already look up
+	// their own session independently.
+	if c, err := r.Cookie(viewerUI.cookieName); err == nil {
+		if sess, ok := s.sessions.Check(c.Value); ok {
+			view.ShowManager = sess.Role.Satisfies(managerUI.role)
+			view.ShowAdmin = sess.Role.Satisfies(adminUI.role)
+		}
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := dashboardPageTmpl.Execute(w, rows); err != nil {
+	if err := dashboardPageTmpl.Execute(w, view); err != nil {
 		s.log.Error("dashboard page render failed", "err", err)
 	}
 }
@@ -127,10 +149,14 @@ var dashboardPageTmpl = template.Must(template.New("dashboard").Parse(`<!doctype
 <body>
 <div class="topbar">
 <div class="masthead">` + brandMark + `<h1>Room status</h1></div>
+<div class="nav-links">
+{{if .ShowAdmin}}<a href="/admin">Admin panel</a>{{end}}
+{{if .ShowManager}}<a href="/manager">Manager panel</a>{{end}}
 <form method="POST" action="/dashboard/logout"><button type="submit" class="ghost">Log out</button></form>
 </div>
+</div>
 <div class="grid">
-{{range .}}
+{{range .Rows}}
 <div class="card surface">
 <span class="chip chip-{{.Status}}">{{.StatusLabel}}</span>
 <h2>{{.Name}}</h2>

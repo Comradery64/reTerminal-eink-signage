@@ -279,8 +279,8 @@ func TestAdminGrantedAccountMustChangePasswordBeforeUsingIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := resp.Header.Get("Location"); got != "/manager" {
-		t.Fatalf("change-password: want redirect to /manager, got %q", got)
+	if got := resp.Header.Get("Location"); got != "/dashboard" {
+		t.Fatalf("change-password: want redirect to /dashboard, got %q", got)
 	}
 
 	// The flag is cleared in config too, and the account can now reach /manager directly.
