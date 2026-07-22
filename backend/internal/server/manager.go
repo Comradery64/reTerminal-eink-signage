@@ -126,7 +126,10 @@ var managerPageTmpl = template.Must(template.New("manager").Parse(`<!doctype htm
 <body>
 <div class="topbar">
 <div class="masthead">` + brandMark + `<h1>Room status</h1></div>
+<div class="nav-links">
+<a href="/dashboard">Dashboard</a>
 <form method="POST" action="/manager/logout"><button type="submit" class="ghost">Log out</button></form>
+</div>
 </div>
 {{if .ErrorMsg}}<p class="banner banner-error">{{.ErrorMsg}}</p>{{end}}
 <div class="grid">

@@ -111,6 +111,11 @@ button.danger:hover { background: var(--red); color: var(--paper); }
   padding: var(--space-5) var(--space-6); border-bottom: 1px solid var(--line);
 }
 .masthead { display: flex; flex-direction: column; gap: var(--space-2); }
+/* Cross-links between /dashboard, /manager, and /admin — one login now grants whichever of these
+   an account's role satisfies, so each page's topbar surfaces links to the others instead of
+   requiring a separate login per door. */
+.nav-links { display: flex; align-items: center; gap: var(--space-4); }
+.nav-links a { font-size: var(--text-sm); }
 
 /* Room roster: the read-only card grid shared by /manager and /dashboard — same status chip,
    battery readout, and card treatment either way, so the two views read as one product with
