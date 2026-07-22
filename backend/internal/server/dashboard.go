@@ -31,7 +31,8 @@ type dashboardPageView struct {
 type dashboardRow struct {
 	status.Device
 	BatteryBar   string
-	StatusLabel  string
+	BatteryText  string // "78%", or "unknown" if this device has never reported — never blank, so
+	StatusLabel  string // every card reserves the same space for this row and the grid stays even
 	LastSeenText string
 	NextCheckIn  string // formatted local clock time, e.g. "3:45 PM"; empty if the room is unknown
 }
@@ -76,8 +77,10 @@ func (s *Server) handleDashboardPage(w http.ResponseWriter, r *http.Request) {
 		row := dashboardRow{Device: d, BatteryBar: batteryBar(d.BatteryPct), StatusLabel: friendlyStatusLabel(d.Status)}
 		if d.Status == "unreported" {
 			row.LastSeenText = "hasn't checked in yet"
+			row.BatteryText = "unknown"
 		} else {
 			row.LastSeenText = humanizeAgo(d.LastSeenSeconds)
+			row.BatteryText = fmt.Sprintf("%d%%", d.BatteryPct)
 		}
 
 		// Next check-in uses the exact same calendar-aware calculation the device itself is told
@@ -161,7 +164,7 @@ var dashboardPageTmpl = template.Must(template.New("dashboard").Parse(`<!doctype
 <div class="card surface">
 <span class="chip chip-{{.Status}}">{{.StatusLabel}}</span>
 <h2>{{.Name}}</h2>
-{{if ne .Status "unreported"}}<p class="readout"><span class="bar">{{.BatteryBar}}</span> {{.BatteryPct}}%</p>{{end}}
+<p class="readout"><span class="bar">{{.BatteryBar}}</span> {{.BatteryText}}</p>
 <dl class="checkin">
 <dt>last check-in:</dt>
 <dd>{{.LastSeenText}}</dd>
