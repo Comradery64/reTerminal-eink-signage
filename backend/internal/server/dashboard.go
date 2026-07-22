@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/calendar"
@@ -34,7 +35,7 @@ type dashboardRow struct {
 	BatteryText  string // "78%", or "unknown" if this device has never reported — never blank, so
 	StatusLabel  string // every card reserves the same space for this row and the grid stays even
 	LastSeenText string
-	NextCheckIn  string // formatted local clock time, e.g. "3:45 PM"; empty if the room is unknown
+	NextCheckIn  string // "~3:45 PM", or "MON ~3:45 PM" if that's not today; empty if unknown
 }
 
 // friendlyStatusLabel rephrases the internal status keyword (shared with /status and
@@ -76,7 +77,7 @@ func (s *Server) handleDashboardPage(w http.ResponseWriter, r *http.Request) {
 	for _, d := range devices {
 		row := dashboardRow{Device: d, BatteryBar: batteryGauge(d.BatteryPct), StatusLabel: friendlyStatusLabel(d.Status)}
 		if d.Status == "unreported" {
-			row.LastSeenText = "hasn't checked in yet"
+			row.LastSeenText = "unknown"
 			row.BatteryText = "unknown"
 		} else {
 			row.LastSeenText = humanizeAgo(d.LastSeenSeconds)
@@ -93,7 +94,13 @@ func (s *Server) handleDashboardPage(w http.ResponseWriter, r *http.Request) {
 				cur, next = entry.Cur, entry.Next
 			}
 			secs := cfg.NextWakeDuration(room, cur, next, now)
-			row.NextCheckIn = now.Add(time.Duration(secs) * time.Second).In(cfg.Location()).Format("3:04 PM")
+			loc := cfg.Location()
+			nowLocal := now.In(loc)
+			nextLocal := now.Add(time.Duration(secs) * time.Second).In(loc)
+			row.NextCheckIn = "~" + nextLocal.Format("3:04 PM")
+			if nextLocal.Format("2006-01-02") != nowLocal.Format("2006-01-02") {
+				row.NextCheckIn = strings.ToUpper(nextLocal.Format("Mon")) + " " + row.NextCheckIn
+			}
 		}
 
 		rows = append(rows, row)
@@ -140,14 +147,8 @@ var dashboardPageTmpl = template.Must(template.New("dashboard").Parse(`<!doctype
 <title>Meeting display fleet — dashboard</title>
 <style>` + baseCSS + `
 .card img { display: block; width: 100%; margin-top: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius); }
-/* Last/next check-in as two label-then-value pairs, each on its own line, with a gap between the
-   pairs — a single run-on line ("last check-in: hasn't checked in yet · next check-in ~12:20 PM")
-   is hard to scan at a glance, which is the whole point of this card for a receptionist walking
-   by. */
-.checkin { margin: 0 0 var(--space-3); }
-.checkin dt, .checkin dd { font-family: var(--font-mono); font-size: var(--text-sm); color: var(--ink-soft); margin: 0; }
-.checkin dd { margin-bottom: var(--space-2); }
-.checkin dd:last-child { margin-bottom: 0; }
+.checkin { margin: 0 0 var(--space-3); font-family: var(--font-mono); font-size: var(--text-sm); color: var(--ink-soft); }
+.checkin p { margin: 0; }
 </style>
 </head>
 <body>
@@ -165,12 +166,10 @@ var dashboardPageTmpl = template.Must(template.New("dashboard").Parse(`<!doctype
 <span class="chip chip-{{.Status}}">{{.StatusLabel}}</span>
 <h2>{{.Name}}</h2>
 <p class="readout">{{.BatteryBar}} {{.BatteryText}}</p>
-<dl class="checkin">
-<dt>last check-in:</dt>
-<dd>{{.LastSeenText}}</dd>
-{{if .NextCheckIn}}<dt>next check-in:</dt>
-<dd>~{{.NextCheckIn}}</dd>{{end}}
-</dl>
+<div class="checkin">
+<p>last check-in: {{.LastSeenText}}</p>
+{{if .NextCheckIn}}<p>next check-in: {{.NextCheckIn}}</p>{{end}}
+</div>
 <img src="/dashboard/preview/{{.DeviceID}}" alt="Last rendered display for {{.Name}}" loading="lazy">
 </div>
 {{end}}
