@@ -282,6 +282,14 @@ spec:
               service:
                 name: broker
                 port: { number: 80 }
+          # Self-hosted web-UI font assets (see internal/server/fonts.go) — unauthenticated,
+          # same trust boundary as /firmware, needed by every login page before a session exists.
+          - path: /assets
+            pathType: Prefix
+            backend:
+              service:
+                name: broker
+                port: { number: 80 }
           - path: /admin
             pathType: Prefix
             backend:
