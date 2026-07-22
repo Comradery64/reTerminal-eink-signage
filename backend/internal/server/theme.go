@@ -1,5 +1,10 @@
 package server
 
+import (
+	"fmt"
+	"html/template"
+)
+
 // baseCSS is the shared design system for the /admin, /manager, and login pages: a palette drawn
 // from the fleet's actual E Ink Spectra-6 gamut (paper, ink, and the panel's four signal colors)
 // rather than a generic dashboard palette, so the control surface visually quotes the hardware it
@@ -151,7 +156,11 @@ button.danger:hover { background: var(--red); color: var(--paper); }
 .card h2 { padding-right: 5.5rem; }
 .card .id { margin-bottom: var(--space-3); font-size: var(--text-sm); }
 .readout { font-family: var(--font-mono); font-size: var(--text-sm); color: var(--ink-soft); margin-bottom: var(--space-4); }
-.readout .bar { color: var(--ink); letter-spacing: -1px; }
+.battgauge {
+  display: inline-block; width: 3.5rem; height: .55rem; vertical-align: middle;
+  background: var(--paper); border: 1px solid var(--ink-soft); border-radius: 1px; overflow: hidden;
+}
+.battgauge-fill { display: block; height: 100%; background: var(--ink); }
 .chip {
   display: inline-flex; align-items: center; gap: var(--space-1);
   font-family: var(--font-mono); font-size: .65rem; text-transform: uppercase; letter-spacing: .06em;
@@ -184,25 +193,19 @@ button.danger:hover { background: var(--red); color: var(--paper); }
 // share the exact same markup, not just the same CSS class names.
 const brandMark = `<div class="brand"><span class="swatches"><span></span><span></span><span></span></span><small>Meeting display fleet</small></div>`
 
-const batteryBarSegments = 10
-
-// batteryBar renders a 10-segment block glyph ("███████░░░") for a battery percentage — a
-// monospace, hardware-readout stand-in for a graphical battery icon, consistent with the theme's
-// terminal-derived data typography.
-func batteryBar(pct int) string {
-	segments := (pct + 5) / 10 // round to nearest tenth
-	if segments < 0 {
-		segments = 0
+// batteryGauge renders a small CSS-drawn gauge (an outlined track with a proportionally-filled
+// bar) for a battery percentage. Previously this was a string of block-character glyphs
+// ("███████░░░"), which relied on every glyph having the same advance width to line up evenly —
+// true under the old monospace font, but not under Open Sans (or whatever font a glyph without a
+// block-character mapping falls back to), so the "filled" and "empty" portions rendered at visibly
+// different, inconsistent widths. Drawing the fill as a percentage-width div sidesteps font
+// metrics entirely.
+func batteryGauge(pct int) template.HTML {
+	if pct < 0 {
+		pct = 0
 	}
-	if segments > batteryBarSegments {
-		segments = batteryBarSegments
+	if pct > 100 {
+		pct = 100
 	}
-	bar := make([]byte, 0, batteryBarSegments*3) // each glyph is a multi-byte UTF-8 rune
-	for i := 0; i < segments; i++ {
-		bar = append(bar, "█"...)
-	}
-	for i := segments; i < batteryBarSegments; i++ {
-		bar = append(bar, "░"...)
-	}
-	return string(bar)
+	return template.HTML(fmt.Sprintf(`<span class="battgauge"><span class="battgauge-fill" style="width:%d%%"></span></span>`, pct))
 }
