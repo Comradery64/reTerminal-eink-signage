@@ -105,6 +105,34 @@ func (f *bitmapFont) glyph(r rune) (bmGlyph, bool) {
 
 func (f *bitmapFont) lineHeight() int { return f.ascent + f.descent }
 
+// inkExtent returns the actual top/bottom of s's drawn pixels, relative to the same "y" origin
+// drawBM takes (i.e. top = min glyph top, bottom = max glyph bottom, both already folded through
+// f.ascent+g.offsetY the way drawBM positions rows). Unlike lineHeight(), which is the font's
+// nominal ascent+descent box, this reflects where the ink itself lands — glyph atlases baked from
+// real font metrics commonly have ascent/descent boxes taller than a given string's actual ink
+// (e.g. no descenders in an all-caps label), so centering on lineHeight() alone visibly off-centers
+// the ink within its box.
+func (f *bitmapFont) inkExtent(s string) (top, bottom int) {
+	top, bottom = 1<<30, -(1 << 30)
+	for _, r := range s {
+		g, ok := f.glyph(r)
+		if !ok || g.h == 0 {
+			continue
+		}
+		gt, gb := f.ascent+g.offsetY, f.ascent+g.offsetY+g.h
+		if gt < top {
+			top = gt
+		}
+		if gb > bottom {
+			bottom = gb
+		}
+	}
+	if top > bottom {
+		return 0, 0
+	}
+	return top, bottom
+}
+
 func (f *bitmapFont) measure(s string) int {
 	w := 0
 	for _, r := range s {
