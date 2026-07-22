@@ -137,13 +137,14 @@ var dashboardPageTmpl = template.Must(template.New("dashboard").Parse(`<!doctype
 <title>Meeting display fleet — dashboard</title>
 <style>` + baseCSS + `
 .card img { display: block; width: 100%; margin-top: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius); }
-/* Last/next check-in as a small aligned label:value list, not one run-on line — "last check-in:
-   hasn't checked in yet · next check-in ~12:20 PM" reads fine as prose but is genuinely harder to
-   scan at a glance than two short stacked rows, which is the whole point of this card for a
-   receptionist walking by. */
-.checkin { display: grid; grid-template-columns: auto 1fr; column-gap: var(--space-2); row-gap: 2px; margin: 0 0 var(--space-3); }
+/* Last/next check-in as two label-then-value pairs, each on its own line, with a gap between the
+   pairs — a single run-on line ("last check-in: hasn't checked in yet · next check-in ~12:20 PM")
+   is hard to scan at a glance, which is the whole point of this card for a receptionist walking
+   by. */
+.checkin { margin: 0 0 var(--space-3); }
 .checkin dt, .checkin dd { font-family: var(--font-mono); font-size: var(--text-sm); color: var(--ink-soft); margin: 0; }
-.checkin dt { text-align: right; }
+.checkin dd { margin-bottom: var(--space-2); }
+.checkin dd:last-child { margin-bottom: 0; }
 </style>
 </head>
 <body>
@@ -160,11 +161,12 @@ var dashboardPageTmpl = template.Must(template.New("dashboard").Parse(`<!doctype
 <div class="card surface">
 <span class="chip chip-{{.Status}}">{{.StatusLabel}}</span>
 <h2>{{.Name}}</h2>
-<p class="id mono">{{.DeviceID}}</p>
 {{if ne .Status "unreported"}}<p class="readout"><span class="bar">{{.BatteryBar}}</span> {{.BatteryPct}}%</p>{{end}}
 <dl class="checkin">
-<dt>last check-in</dt><dd>{{.LastSeenText}}</dd>
-{{if .NextCheckIn}}<dt>next check-in</dt><dd>~{{.NextCheckIn}}</dd>{{end}}
+<dt>last check-in:</dt>
+<dd>{{.LastSeenText}}</dd>
+{{if .NextCheckIn}}<dt>next check-in:</dt>
+<dd>~{{.NextCheckIn}}</dd>{{end}}
 </dl>
 <img src="/dashboard/preview/{{.DeviceID}}" alt="Last rendered display for {{.Name}}" loading="lazy">
 </div>
