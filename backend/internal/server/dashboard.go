@@ -32,9 +32,9 @@ type dashboardRow struct {
 func friendlyStatusLabel(s string) string {
 	switch s {
 	case "unreported":
-		return "waiting for check-in"
+		return "waiting"
 	case "stale":
-		return "overdue check-in"
+		return "overdue"
 	case "low_battery":
 		return "low battery"
 	default:
