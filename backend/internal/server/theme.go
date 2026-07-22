@@ -133,7 +133,10 @@ button.danger:hover { background: var(--red); color: var(--paper); }
 .chip::before { content: ""; width: .45rem; height: .45rem; background: currentColor; }
 .chip-ok { color: var(--green); }
 .chip-stale, .chip-low_battery, .chip-warn { color: var(--amber); }
-.chip-unreported { color: var(--red); }
+/* Neutral, not alarming — "unreported" commonly just means "hasn't had its first check-in yet"
+   (e.g. right after a broker restart, or a device on a long calendar-driven wake cycle), which is
+   a normal transient state, not a fault. Genuine faults use chip-stale (amber) above. */
+.chip-unreported { color: var(--blue); }
 .banner {
   margin: var(--space-4) var(--space-6) 0; padding: var(--space-2) var(--space-3);
   border-radius: var(--radius); font-size: var(--text-base);

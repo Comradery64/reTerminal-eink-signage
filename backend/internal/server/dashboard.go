@@ -1,27 +1,89 @@
 package server
 
 import (
+	"fmt"
 	"html/template"
 	"net/http"
 	"time"
 
+	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/calendar"
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/status"
 )
 
 // dashboardRow is status-only — unlike managerRow, it carries no wake-mode fields, because this
 // role has no controls at all, just the same read-only roster /manager shows.
+//
+// StatusLabel/LastSeenText/NextCheckIn exist because the raw status.Device fields (the terse
+// "unreported" keyword, a raw seconds count) read as alarming or unclear to a non-technical
+// viewer (e.g. a receptionist) even when they describe a perfectly normal state — a device on
+// "smart" wake mode, or one that simply hasn't had its first check-in yet since a broker
+// restart, looks identical to a genuinely broken device without this context.
 type dashboardRow struct {
 	status.Device
-	BatteryBar string
+	BatteryBar   string
+	StatusLabel  string
+	LastSeenText string
+	NextCheckIn  string // formatted local clock time, e.g. "3:45 PM"; empty if the room is unknown
+}
+
+// friendlyStatusLabel rephrases the internal status keyword (shared with /status and
+// /api/v1/status, so not itself changed) into wording that doesn't read as an outage to someone
+// without broker context.
+func friendlyStatusLabel(s string) string {
+	switch s {
+	case "unreported":
+		return "waiting for check-in"
+	case "stale":
+		return "overdue check-in"
+	case "low_battery":
+		return "low battery"
+	default:
+		return "ok"
+	}
+}
+
+// humanizeAgo turns a raw seconds-ago count into a coarse, readable duration.
+func humanizeAgo(secs int64) string {
+	switch {
+	case secs < 60:
+		return "just now"
+	case secs < 3600:
+		return fmt.Sprintf("%dm ago", secs/60)
+	case secs < 86400:
+		return fmt.Sprintf("%dh ago", secs/3600)
+	default:
+		return fmt.Sprintf("%dd ago", secs/86400)
+	}
 }
 
 func (s *Server) handleDashboardPage(w http.ResponseWriter, r *http.Request) {
 	cfg := s.cfg.Load()
-	devices := status.Build(cfg, s.tlm, time.Now())
+	now := time.Now()
+	devices := status.Build(cfg, s.tlm, now)
 
 	rows := make([]dashboardRow, 0, len(devices))
 	for _, d := range devices {
-		rows = append(rows, dashboardRow{Device: d, BatteryBar: batteryBar(d.BatteryPct)})
+		row := dashboardRow{Device: d, BatteryBar: batteryBar(d.BatteryPct), StatusLabel: friendlyStatusLabel(d.Status)}
+		if d.Status == "unreported" {
+			row.LastSeenText = "hasn't checked in yet"
+		} else {
+			row.LastSeenText = humanizeAgo(d.LastSeenSeconds)
+		}
+
+		// Next check-in uses the exact same calendar-aware calculation the device itself is told
+		// to obey (config.NextWakeDuration, also used to set the device's X-Next-Wake header), so
+		// this never drifts from reality — a room that hasn't reported yet still gets an honest
+		// estimate instead of looking stuck.
+		if room, ok := cfg.RoomByDeviceID(d.DeviceID); ok {
+			var cur, next *calendar.Event
+			if entry, ok := s.cache.Get(d.DeviceID); ok {
+				cur, next = entry.Cur, entry.Next
+			}
+			secs := cfg.NextWakeDuration(room, cur, next, now)
+			row.NextCheckIn = now.Add(time.Duration(secs) * time.Second).In(cfg.Location()).Format("3:04 PM")
+		}
+
+		rows = append(rows, row)
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -63,10 +125,12 @@ var dashboardPageTmpl = template.Must(template.New("dashboard").Parse(`<!doctype
 <div class="grid">
 {{range .}}
 <div class="card surface">
-<span class="chip chip-{{.Status}}">{{.Status}}</span>
+<span class="chip chip-{{.Status}}">{{.StatusLabel}}</span>
 <h2>{{.Name}}</h2>
 <p class="id mono">{{.DeviceID}}</p>
-<p class="readout"><span class="bar">{{.BatteryBar}}</span> {{.BatteryPct}}% &middot; seen {{.LastSeenSeconds}}s ago</p>
+<p class="readout">
+{{if ne .Status "unreported"}}<span class="bar">{{.BatteryBar}}</span> {{.BatteryPct}}% &middot; {{end}}last check-in: {{.LastSeenText}}{{if .NextCheckIn}} &middot; next check-in ~{{.NextCheckIn}}{{end}}
+</p>
 <img src="/dashboard/preview/{{.DeviceID}}" alt="Last rendered display for {{.Name}}" loading="lazy">
 </div>
 {{end}}
