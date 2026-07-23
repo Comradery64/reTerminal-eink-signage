@@ -35,7 +35,7 @@ type dashboardRow struct {
 	BatteryText  string // "78%", or "unknown" if this device has never reported — never blank, so
 	StatusLabel  string // every card reserves the same space for this row and the grid stays even
 	LastSeenText string
-	NextCheckIn  string // "~3:45 PM", or "MON ~3:45 PM" if that's not today; empty if unknown
+	NextCheckIn  string // e.g. "MON ~3:45 PM"; empty if unknown
 }
 
 // friendlyStatusLabel rephrases the internal status keyword (shared with /status and
@@ -94,13 +94,8 @@ func (s *Server) handleDashboardPage(w http.ResponseWriter, r *http.Request) {
 				cur, next = entry.Cur, entry.Next
 			}
 			secs := cfg.NextWakeDuration(room, cur, next, now)
-			loc := cfg.Location()
-			nowLocal := now.In(loc)
-			nextLocal := now.Add(time.Duration(secs) * time.Second).In(loc)
-			row.NextCheckIn = "~" + nextLocal.Format("3:04 PM")
-			if nextLocal.Format("2006-01-02") != nowLocal.Format("2006-01-02") {
-				row.NextCheckIn = strings.ToUpper(nextLocal.Format("Mon")) + " " + row.NextCheckIn
-			}
+			nextLocal := now.Add(time.Duration(secs) * time.Second).In(cfg.Location())
+			row.NextCheckIn = strings.ToUpper(nextLocal.Format("Mon")) + " ~" + nextLocal.Format("3:04 PM")
 		}
 
 		rows = append(rows, row)
@@ -149,6 +144,7 @@ var dashboardPageTmpl = template.Must(template.New("dashboard").Parse(`<!doctype
 .card img { display: block; width: 100%; margin-top: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius); }
 .checkin { margin: 0 0 var(--space-3); font-family: var(--font-mono); font-size: var(--text-sm); color: var(--ink-soft); }
 .checkin p { margin: 0; }
+.checkin-value { color: var(--ink); }
 </style>
 </head>
 <body>
@@ -167,8 +163,8 @@ var dashboardPageTmpl = template.Must(template.New("dashboard").Parse(`<!doctype
 <h2>{{.Name}}</h2>
 <p class="readout">{{.BatteryBar}} {{.BatteryText}}</p>
 <div class="checkin">
-<p>last check-in: {{.LastSeenText}}</p>
-{{if .NextCheckIn}}<p>next check-in: {{.NextCheckIn}}</p>{{end}}
+<p>last check-in: <span class="checkin-value">{{.LastSeenText}}</span></p>
+{{if .NextCheckIn}}<p>next check-in: <span class="checkin-value">{{.NextCheckIn}}</span></p>{{end}}
 </div>
 <img src="/dashboard/preview/{{.DeviceID}}" alt="Last rendered display for {{.Name}}" loading="lazy">
 </div>
