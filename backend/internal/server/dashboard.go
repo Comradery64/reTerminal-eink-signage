@@ -144,7 +144,7 @@ var dashboardPageTmpl = template.Must(template.New("dashboard").Parse(`<!doctype
 .card img { display: block; width: 100%; margin-top: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius); }
 .checkin { margin: 0 0 var(--space-3); font-family: var(--font-mono); font-size: var(--text-sm); color: var(--ink-soft); }
 .checkin p { margin: 0; }
-.checkin-value { color: var(--ink); }
+.checkin-label { font-weight: 600; color: var(--ink); }
 </style>
 </head>
 <body>
@@ -163,8 +163,8 @@ var dashboardPageTmpl = template.Must(template.New("dashboard").Parse(`<!doctype
 <h2>{{.Name}}</h2>
 <p class="readout">{{.BatteryBar}} {{.BatteryText}}</p>
 <div class="checkin">
-<p>last check-in: <span class="checkin-value">{{.LastSeenText}}</span></p>
-{{if .NextCheckIn}}<p>next check-in: <span class="checkin-value">{{.NextCheckIn}}</span></p>{{end}}
+<p><span class="checkin-label">last check-in:</span> {{.LastSeenText}}</p>
+{{if .NextCheckIn}}<p><span class="checkin-label">next check-in:</span> {{.NextCheckIn}}</p>{{end}}
 </div>
 <img src="/dashboard/preview/{{.DeviceID}}" alt="Last rendered display for {{.Name}}" loading="lazy">
 </div>
