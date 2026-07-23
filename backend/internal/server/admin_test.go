@@ -103,6 +103,104 @@ func TestAdminAddRoomThenLoginWithNewToken(t *testing.T) {
 	}
 }
 
+// TestAdminEditRoomPreservesTokenAndWakeOverrideWhenFieldsLeftBlank guards against the exact bug
+// this test was added for: editing an existing room by resubmitting the same device_id (the only
+// way this form supports edits — it has no per-row prefill) used to silently wipe the room's
+// token and wake override whenever those fields were left blank/unchanged, because the handler
+// only ever preserved them by looking up original_device_id, which this form never actually
+// populates. Left unfixed, this is why only one room in a real fleet kept its business-hours
+// override — every other room lost its override the first time anyone touched it here.
+func TestAdminEditRoomPreservesTokenAndWakeOverrideWhenFieldsLeftBlank(t *testing.T) {
+	s := testServerWithAuth(t)
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+
+	mode := "flat"
+	secs := uint32(1800)
+	withOverride, err := s.cfg.Load().WithRoomWakeOverride("rt-1", &mode, &secs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.applyConfig(withOverride, true)
+	originalTokenHash := withOverride.Rooms[0].TokenSHA256
+
+	client := loggedInAdminClient(t, srv)
+	resp, err := client.PostForm(srv.URL+"/admin/rooms/save", url.Values{
+		"device_id": {"rt-1"},
+		"name":      {"Aspen (renamed)"}, // the one field actually being changed
+		"room":      {"a@x"},
+		// token, wake_mode_override, wake_flat_interval_seconds all deliberately left blank
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("edit room: want 303, got %d", resp.StatusCode)
+	}
+
+	room, ok := s.cfg.Load().RoomByDeviceID("rt-1")
+	if !ok {
+		t.Fatal("room rt-1 missing after edit")
+	}
+	if room.Name != "Aspen (renamed)" {
+		t.Fatalf("name should have been updated, got %q", room.Name)
+	}
+	if room.TokenSHA256 != originalTokenHash {
+		t.Fatalf("token must survive an edit that left the token field blank: got %q, want %q", room.TokenSHA256, originalTokenHash)
+	}
+	if room.WakeMode == nil || *room.WakeMode != "flat" {
+		t.Fatalf("wake mode override must survive an edit that left it unchanged: got %+v", room.WakeMode)
+	}
+	if room.FlatIntervalSeconds == nil || *room.FlatIntervalSeconds != 1800 {
+		t.Fatalf("flat interval override must survive an edit that left it unchanged: got %+v", room.FlatIntervalSeconds)
+	}
+}
+
+// TestAdminEditRoomCanExplicitlySetOrClearWakeOverride covers the other half: the new fields
+// actually work when an admin does want to change or remove the override from /admin, not just
+// /manager's per-room Smart/Simple toggle.
+func TestAdminEditRoomCanExplicitlySetOrClearWakeOverride(t *testing.T) {
+	s := testServerWithAuth(t)
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+	client := loggedInAdminClient(t, srv)
+
+	resp, err := client.PostForm(srv.URL+"/admin/rooms/save", url.Values{
+		"device_id":                  {"rt-1"},
+		"name":                       {"Aspen"},
+		"room":                       {"a@x"},
+		"wake_mode_override":         {"flat"},
+		"wake_flat_interval_seconds": {"900"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("set override: want 303, got %d", resp.StatusCode)
+	}
+	room, _ := s.cfg.Load().RoomByDeviceID("rt-1")
+	if room.WakeMode == nil || *room.WakeMode != "flat" || room.FlatIntervalSeconds == nil || *room.FlatIntervalSeconds != 900 {
+		t.Fatalf("override should now be set: %+v / %+v", room.WakeMode, room.FlatIntervalSeconds)
+	}
+
+	resp, err = client.PostForm(srv.URL+"/admin/rooms/save", url.Values{
+		"device_id":          {"rt-1"},
+		"name":               {"Aspen"},
+		"room":               {"a@x"},
+		"wake_mode_override": {"default"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("clear override: want 303, got %d", resp.StatusCode)
+	}
+	room, _ = s.cfg.Load().RoomByDeviceID("rt-1")
+	if room.WakeMode != nil {
+		t.Fatalf("override should be cleared back to fleet default, got %+v", room.WakeMode)
+	}
+}
+
 func TestAdminDeleteRoomRejectsLastRoom(t *testing.T) {
 	s := testServerWithAuth(t)
 	srv := httptest.NewTLSServer(s.Handler())

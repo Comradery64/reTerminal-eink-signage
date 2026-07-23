@@ -41,8 +41,16 @@ func (s *Server) handleAdminPage(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAdminSaveRoom handles both add (empty original_device_id) and edit (non-empty). The token
-// field is optional on edit — leave it blank to keep the room's existing token; a room being
-// added for the first time must supply one.
+// and wake-override fields are optional on edit — leave them blank/"unchanged" to keep the room's
+// existing values; a room being added for the first time must supply a token.
+//
+// "Existing" is looked up by original_device_id if given (a rename — see the delete-old-entry
+// step below), else by device_id itself, since this form has no per-row prefill and is commonly
+// resubmitted with the same device_id just to change one field (e.g. fixing a typo in the name):
+// without this lookup, every such edit would silently wipe the token (failing validation) and any
+// wake override (config.Room.WakeMode/FlatIntervalSeconds) the room had — exactly the bug that
+// left only one room in the fleet with its business-hours override intact, since every other
+// room's override had never survived a subsequent edit here.
 func (s *Server) handleAdminSaveRoom(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
@@ -52,21 +60,45 @@ func (s *Server) handleAdminSaveRoom(w http.ResponseWriter, r *http.Request) {
 	deviceID := r.PostForm.Get("device_id")
 	originalDeviceID := r.PostForm.Get("original_device_id")
 
+	lookupID := deviceID
+	if originalDeviceID != "" {
+		lookupID = originalDeviceID
+	}
+	existing, hasExisting := cfg.RoomByDeviceID(lookupID)
+
 	tokenHash := ""
 	if plaintext := r.PostForm.Get("token"); plaintext != "" {
 		sum := sha256.Sum256([]byte(plaintext))
 		tokenHash = hex.EncodeToString(sum[:])
-	} else if originalDeviceID != "" {
-		if existing, ok := cfg.RoomByDeviceID(originalDeviceID); ok {
-			tokenHash = existing.TokenSHA256
-		}
+	} else if hasExisting {
+		tokenHash = existing.TokenSHA256
+	}
+
+	wakeMode := (*string)(nil)
+	flatSeconds := (*uint32)(nil)
+	if hasExisting {
+		wakeMode = existing.WakeMode
+		flatSeconds = existing.FlatIntervalSeconds
+	}
+	switch r.PostForm.Get("wake_mode_override") {
+	case "default":
+		wakeMode = nil
+	case "smart", "flat":
+		m := r.PostForm.Get("wake_mode_override")
+		wakeMode = &m
+	}
+	if v := r.PostForm.Get("wake_flat_interval_seconds"); v != "" {
+		n := formUint32(r, "wake_flat_interval_seconds")
+		flatSeconds = &n
 	}
 
 	room := config.Room{
-		DeviceID:    deviceID,
-		Name:        r.PostForm.Get("name"),
-		Room:        r.PostForm.Get("room"),
-		TokenSHA256: tokenHash,
+		DeviceID:            deviceID,
+		Name:                r.PostForm.Get("name"),
+		Room:                r.PostForm.Get("room"),
+		TokenSHA256:         tokenHash,
+		WakeMode:            wakeMode,
+		FlatIntervalSeconds: flatSeconds,
 	}
 
 	newCfg, err := cfg.WithRoom(room)
@@ -521,6 +553,15 @@ form button[type=submit]:not(.danger):not(.ghost) { margin-top: var(--space-4); 
 <label for="r-name">Name</label><input id="r-name" type="text" name="name" required>
 <label for="r-room">Calendar (room email)</label><input id="r-room" type="text" name="room" required>
 <label for="r-token">Device token (leave blank to keep existing)</label><input id="r-token" type="text" name="token">
+<label for="r-wake">Wake override (leave unchanged to keep existing)</label>
+<select id="r-wake" name="wake_mode_override">
+<option value="">— leave unchanged —</option>
+<option value="default">Fleet default (remove override)</option>
+<option value="smart">Smart — calendar-driven</option>
+<option value="flat">Flat — fixed interval</option>
+</select>
+<label for="r-wake-interval">Flat interval seconds (only used when Flat is selected; leave blank to keep existing)</label>
+<input id="r-wake-interval" type="number" name="wake_flat_interval_seconds">
 <button type="submit">Save room</button>
 </form>
 </details>
