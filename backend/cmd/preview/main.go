@@ -21,47 +21,56 @@ func main() {
 	flag.Parse()
 
 	loc, _ := time.LoadLocation("America/New_York")
-	now := time.Date(2026, 6, 25, 10, 19, 0, 0, loc)
 	r := render.New(800, 480, *dither)
 
-	ev := func(subj string, startMin, durMin int, private bool) calendar.Event {
-		s := now.Add(time.Duration(startMin) * time.Minute)
-		return calendar.Event{Subject: subj, Start: s, End: s.Add(time.Duration(durMin) * time.Minute), Private: private}
+	// Real calendars overwhelmingly book on the hour or half hour — using arbitrary minute
+	// offsets here (e.g. 9:52, 10:27) made every scenario look like a rendering bug rather than a
+	// realistic schedule. All start times below land on the hour.
+	at := func(h, m int, dayOffset int) time.Time {
+		base := time.Date(2026, 6, 25, h, m, 0, 0, loc)
+		return base.AddDate(0, 0, dayOffset)
+	}
+	ev := func(subj string, start, end time.Time, private bool) calendar.Event {
+		return calendar.Event{Subject: subj, Start: start, End: end, Private: private}
 	}
 
 	scenarios := []struct {
-		file   string
-		sched  *calendar.Schedule
+		file  string
+		now   time.Time
+		sched *calendar.Schedule
 	}{
-		{"preview-available.png", &calendar.Schedule{RoomName: "Aspen", FetchedAt: now, Events: []calendar.Event{
-			ev("Design review", 95, 45, false),
-			ev("1:1 — Priya / Sam", 200, 30, true),
+		{"preview-available.png", at(10, 0, 0), &calendar.Schedule{RoomName: "Aspen", FetchedAt: at(10, 0, 0), Events: []calendar.Event{
+			ev("Design review", at(12, 0, 0), at(13, 0, 0), false),
+			ev("1:1 — Priya / Sam", at(14, 0, 0), at(14, 30, 0), true),
 		}}},
-		{"preview-inuse.png", &calendar.Schedule{RoomName: "Birch", FetchedAt: now, Events: []calendar.Event{
-			ev("Quarterly planning", -25, 60, false),
-			ev("Vendor demo", 50, 30, false),
-			ev("Eng sync", 140, 30, false),
+		{"preview-inuse.png", at(10, 0, 0), &calendar.Schedule{RoomName: "Birch", FetchedAt: at(10, 0, 0), Events: []calendar.Event{
+			ev("Quarterly planning", at(9, 0, 0), at(11, 0, 0), false),
+			ev("Vendor demo", at(11, 0, 0), at(11, 30, 0), false),
+			ev("Eng sync", at(13, 0, 0), at(14, 0, 0), false),
 		}}},
-		{"preview-soon.png", &calendar.Schedule{RoomName: "Cedar", FetchedAt: now, Events: []calendar.Event{
-			ev("Standup", 8, 15, false),
-			ev("Customer call", 60, 45, false),
+		// now is 10 minutes before Standup — right at the edge of calendar.StartingSoonWindow —
+		// so the panel shows yellow "STARTING SOON" instead of green "AVAILABLE".
+		{"preview-soon.png", at(9, 50, 0), &calendar.Schedule{RoomName: "Cedar", FetchedAt: at(9, 50, 0), Events: []calendar.Event{
+			ev("Standup", at(10, 0, 0), at(10, 30, 0), false),
+			ev("Customer call", at(11, 0, 0), at(12, 0, 0), false),
 		}}},
 		// Nothing left today; the only upcoming event is tomorrow morning (poll window spans
 		// today+tomorrow). Regression check for the day-abbreviation fix — without it, this looked
 		// like a same-day meeting on a day with nothing actually scheduled.
-		{"preview-nextday.png", &calendar.Schedule{RoomName: "Dogwood", FetchedAt: now, Events: []calendar.Event{
-			ev("Team offsite prep", 1200, 60, false),
+		{"preview-nextday.png", at(18, 0, 0), &calendar.Schedule{RoomName: "Dogwood", FetchedAt: at(18, 0, 0), Events: []calendar.Event{
+			ev("Team offsite prep", at(7, 0, 1), at(8, 0, 1), false),
 		}}},
-		// Current meeting ends in 3 min (inside calendar.BackToBackWindow) with another meeting
-		// starting immediately after — the "Next: ..." preview line should appear.
-		{"preview-backtoback.png", &calendar.Schedule{RoomName: "Elm", FetchedAt: now, Events: []calendar.Event{
-			ev("Sprint retro", -27, 30, false),
-			ev("Roadmap sync", 3, 45, false),
+		// now is 1 minute before Sprint retro ends, with Roadmap sync starting the moment it ends
+		// (inside calendar.BackToBackWindow) — regression check that the up-next list (not an
+		// inline "Next: ..." line) is what surfaces the following meeting.
+		{"preview-backtoback.png", at(9, 59, 0), &calendar.Schedule{RoomName: "Elm", FetchedAt: at(9, 59, 0), Events: []calendar.Event{
+			ev("Sprint retro", at(9, 0, 0), at(10, 0, 0), false),
+			ev("Roadmap sync", at(10, 0, 0), at(10, 45, 0), false),
 		}}},
 	}
 
 	for _, sc := range scenarios {
-		img := r.Compose(sc.sched, now)
+		img := r.Compose(sc.sched, sc.now)
 		f, err := os.Create(sc.file)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "create:", err)

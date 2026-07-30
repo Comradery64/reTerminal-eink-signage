@@ -67,22 +67,17 @@ func (r *Renderer) Compose(sched *calendar.Schedule, now time.Time) *image.Palet
 	return quantize(canvas, r.Dither)
 }
 
-// drawStatusPanel fills the left-hand color panel and centers the status headline in it.
+// drawStatusPanel fills the left-hand color panel and centers the status headline in it. The
+// full meeting time always lives in the right-hand info panel — this panel is status only, never
+// a clock time, to avoid showing the same time twice.
 func (r *Renderer) drawStatusPanel(canvas *image.RGBA, cur, next *calendar.Event, now time.Time) {
 	var bandCol color.RGBA
 	var lines []string
-	var detail string
 	switch calendar.RoomStatus(cur, next, now) {
 	case "in_meeting":
 		bandCol, lines = cRed, []string{"IN", "MEETING"}
 	case "starting_soon":
-		// Static clock time, not a live "in Xm" countdown — a relative countdown recomputes (and
-		// so changes the ETag, forcing a refresh) on every single poll regardless of whether
-		// anything on the calendar actually changed, defeating the point of calendar-driven wake
-		// scheduling (internal/config's smart mode): content should only change at real
-		// transitions.
 		bandCol, lines = cYellow, []string{"STARTING", "SOON"}
-		detail = fmt.Sprintf("at %s", next.Start.In(now.Location()).Format("3:04 PM"))
 	default:
 		bandCol, lines = cGreen, []string{"AVAILABLE"}
 	}
@@ -95,13 +90,11 @@ func (r *Renderer) drawStatusPanel(canvas *image.RGBA, cur, next *calendar.Event
 
 	const panelPadding = 24
 	big := fitBitmapFont(lines, statusPanelW-2*panelPadding)
-	small := regular(29)
-	lineH := big.lineHeight() + 12
+	// Roughly half the whitespace between the two headline words (e.g. "IN" / "MEETING",
+	// "STARTING" / "SOON") compared to the font's nominal line height.
+	lineH := big.lineHeight() - 8
 
 	total := lineH * len(lines)
-	if detail != "" {
-		total += 34
-	}
 	y := r.H/2 - total/2
 
 	// The loop below places each line's nominal ascent+descent box starting at y, but the box is
@@ -113,11 +106,6 @@ func (r *Renderer) drawStatusPanel(canvas *image.RGBA, cur, next *calendar.Event
 	lastTop := y + lineH*(len(lines)-1)
 	_, lastBottom := big.inkExtent(lines[len(lines)-1])
 	lastBottom += lastTop
-	if detail != "" {
-		detailY := y + lineH*len(lines) - 6
-		_, detailBottom := small.inkExtent(detail)
-		lastBottom = detailY + detailBottom
-	}
 	inkCenter := (y + firstTop + lastBottom) / 2
 	y += r.H/2 - inkCenter
 
@@ -125,10 +113,6 @@ func (r *Renderer) drawStatusPanel(canvas *image.RGBA, cur, next *calendar.Event
 		w := big.measure(ln)
 		drawBM(canvas, big, (statusPanelW-w)/2, y, ln, textCol)
 		y += lineH
-	}
-	if detail != "" {
-		w := small.measure(detail)
-		drawBM(canvas, small, (statusPanelW-w)/2, y-6, detail, textCol)
 	}
 }
 
@@ -139,48 +123,63 @@ func (r *Renderer) drawInfoPanel(canvas *image.RGBA, sched *calendar.Schedule, c
 	maxW := r.W - x0 - margin
 
 	nameFont := bold(53)
-	y := 48
+	y := 6
 	for _, ln := range wrapTextBM(nameFont, sched.RoomName, maxW) {
 		drawBM(canvas, nameFont, x0, y, ln, cBlack)
 		y += 50
 	}
-	y += 30 // wider gap between the name group and the schedule group than within either group
+	y += 50 // wider gap between the name group and the schedule group than within either group
 
 	labelFont := regular(24)
 	subjFont := bold(35)
 	timeFont := regular(32)
 	const labelTracking = 2 // px of extra space between letters, for a signage-style label
 
+	// The title+time block is the focal point of the panel, but it sits in a lot of otherwise
+	// empty vertical space between the label (right under the room name) and the up-next divider
+	// near the bottom — center the block in that space rather than leaving it pinned to the top.
+	// headerReserve keeps the "UPCOMING" header (drawn just above the divider, below) clear of
+	// the centered block.
+	const headerReserve = 46
+	dividerY := r.H - 116
+	center := func(labelBottom, blockH int) int {
+		limit := dividerY - headerReserve
+		cy := labelBottom + (limit-labelBottom-blockH)/2
+		if cy < labelBottom+20 {
+			cy = labelBottom + 20
+		}
+		return cy
+	}
+
 	switch {
 	case cur != nil:
 		drawBMTracked(canvas, labelFont, x0, y, "CURRENT MEETING", labelTracking, cBlack)
-		y += 34
+		labelBottom := y + 34
+		y = center(labelBottom, 40+34)
 		drawBM(canvas, subjFont, x0, y, truncate(meetingTitle(cur), 26), cBlack)
 		y += 40
-		drawBM(canvas, timeFont, x0, y, fmt.Sprintf("%s - %s",
+		drawBM(canvas, timeFont, x0, y+5, fmt.Sprintf("%s - %s",
 			cur.Start.In(now.Location()).Format("3:04 PM"), cur.End.In(now.Location()).Format("3:04 PM")), cBlack)
 		y += 34
-		// Back-to-back preview: only reveal it in the current meeting's last
-		// calendar.BackToBackWindow, matching when the device actually wakes to check for it
-		// (calendar.NextTransitionAt) — showing it the whole meeting would be premature info and
-		// would also destabilize the ETag far earlier than necessary.
-		if b2b := calendar.BackToBack(cur, next); b2b != nil && cur.End.Sub(now) <= calendar.BackToBackWindow {
-			drawBM(canvas, labelFont, x0, y, fmt.Sprintf("Next: %s at %s",
-				truncate(meetingTitle(b2b), 20), b2b.Start.In(now.Location()).Format("3:04 PM")), cBlack)
-			y += 40
-		}
 	case next != nil:
 		drawBMTracked(canvas, labelFont, x0, y, "NEXT MEETING", labelTracking, cBlack)
-		y += 34
+		labelBottom := y + 34
+		y = center(labelBottom, 40+40)
 		drawBM(canvas, subjFont, x0, y, truncate(meetingTitle(next), 26), cBlack)
 		y += 40
 		// The poll window spans today+tomorrow (for cross-midnight "up next"), so the next
 		// meeting can be tomorrow's — a bare time here would look like a same-day meeting on a
-		// day with nothing left scheduled. The day abbreviation removes that ambiguity.
-		drawBM(canvas, timeFont, x0, y, fmt.Sprintf("%s  %s - %s", dayAbbrev(next.Start, now),
-			next.Start.In(now.Location()).Format("3:04 PM"), next.End.In(now.Location()).Format("3:04 PM")), cBlack)
+		// day with nothing left scheduled. The day abbreviation removes that ambiguity, but only
+		// when it's actually a different day — today's own meetings need no date name.
+		timeRange := fmt.Sprintf("%s - %s",
+			next.Start.In(now.Location()).Format("3:04 PM"), next.End.In(now.Location()).Format("3:04 PM"))
+		if day := dayAbbrev(next.Start, now); day != "" {
+			timeRange = day + "  " + timeRange
+		}
+		drawBM(canvas, timeFont, x0, y+5, timeRange, cBlack)
 		y += 40
 	default:
+		y = center(y, 40)
 		drawBM(canvas, subjFont, x0, y, "Free for the rest of the day", cBlack)
 		y += 40
 	}
@@ -192,6 +191,7 @@ func (r *Renderer) drawInfoPanel(canvas *image.RGBA, sched *calendar.Schedule, c
 	}
 	upNextFont := regular(24)
 	y = r.H - 100
+	drawBM(canvas, upNextFont, x0, y-30, "UPCOMING", cBlack)
 	fillRect(canvas, x0, y-16, maxW, 2, cBlack)
 	shown := 0
 	for i := range sched.Events {
@@ -199,11 +199,13 @@ func (r *Renderer) drawInfoPanel(canvas *image.RGBA, sched *calendar.Schedule, c
 		if !e.Start.After(now) || e == skip {
 			continue
 		}
-		line := fmt.Sprintf("%s %s - %s   %s",
-			dayAbbrev(e.Start, now),
+		line := fmt.Sprintf("%s - %s   %s",
 			e.Start.In(now.Location()).Format("3:04"),
 			e.End.In(now.Location()).Format("3:04 PM"),
 			meetingTitle(e))
+		if day := dayAbbrev(e.Start, now); day != "" {
+			line = day + " " + line
+		}
 		drawBM(canvas, upNextFont, x0, y, truncate(line, 40), cBlack)
 		y += 26
 		if shown++; shown >= 2 {
@@ -212,9 +214,16 @@ func (r *Renderer) drawInfoPanel(canvas *image.RGBA, sched *calendar.Schedule, c
 	}
 }
 
-// dayAbbrev returns the 3-letter weekday (e.g. "MON") for t in now's location.
+// dayAbbrev returns the 3-letter weekday (e.g. "MON") for t in now's location, or "" if t falls
+// on the same calendar day as now — today's own meetings don't need a date name.
 func dayAbbrev(t, now time.Time) string {
-	return strings.ToUpper(t.In(now.Location()).Format("Mon"))
+	loc := now.Location()
+	ty, tm, td := t.In(loc).Date()
+	ny, nm, nd := now.In(loc).Date()
+	if ty == ny && tm == nm && td == nd {
+		return ""
+	}
+	return strings.ToUpper(t.In(loc).Format("Mon"))
 }
 
 func meetingTitle(e *calendar.Event) string {
