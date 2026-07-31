@@ -305,6 +305,7 @@ func TestAdminGrantAccessAddsUserWhoCanImmediatelyLogIn(t *testing.T) {
 
 	resp, err := adminClient.PostForm(srv.URL+"/admin/access/save", url.Values{
 		"username": {"newmanager"}, "password": {"new-pw"}, "role": {"manager"},
+		"force_password_change": {"on"}, // checked by default in the real form
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -349,6 +350,7 @@ func TestAdminGrantedAccountMustChangePasswordBeforeUsingIt(t *testing.T) {
 
 	if _, err := adminClient.PostForm(srv.URL+"/admin/access/save", url.Values{
 		"username": {"newmanager"}, "password": {"temp-pw"}, "role": {"manager"},
+		"force_password_change": {"on"}, // checked by default in the real form
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -401,6 +403,41 @@ func TestAdminGrantedAccountMustChangePasswordBeforeUsingIt(t *testing.T) {
 	}
 	if got := loginResp.Header.Get("Location"); got == "/manager" {
 		t.Fatal("the old admin-set password must stop working once the account holder changes it")
+	}
+}
+
+func TestAdminGrantAccessCanSkipForcedPasswordChange(t *testing.T) {
+	s := testServerWithAuth(t)
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+	adminClient := loggedInAdminClient(t, srv)
+
+	// Omitting force_password_change reproduces an unchecked checkbox — a real browser never
+	// submits an unchecked checkbox's name at all.
+	if _, err := adminClient.PostForm(srv.URL+"/admin/access/save", url.Values{
+		"username": {"sharedviewer"}, "password": {"shared-pw"}, "role": {"viewer"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	user, ok := s.cfg.Load().UserByUsername("sharedviewer")
+	if !ok {
+		t.Fatal("new user not present in config")
+	}
+	if user.MustChangePassword {
+		t.Fatal("unchecking force-password-change should leave MustChangePassword false")
+	}
+
+	jar, _ := cookiejar.New(nil)
+	client := srv.Client()
+	client.Jar = jar
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }
+	loginResp, err := client.PostForm(srv.URL+"/dashboard/login", url.Values{"username": {"sharedviewer"}, "password": {"shared-pw"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loginResp.Header.Get("Location"); got != "/dashboard" {
+		t.Fatalf("login without a forced change: want redirect straight to /dashboard, got %q", got)
 	}
 }
 

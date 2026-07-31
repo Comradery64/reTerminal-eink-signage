@@ -216,16 +216,17 @@ func (s *Server) handleAdminSaveUser(w http.ResponseWriter, r *http.Request) {
 	username := r.PostForm.Get("username")
 	originalUsername := r.PostForm.Get("original_username")
 
-	// Any password an admin types here is a temporary one the account holder never chose — force
-	// them to replace it with something only they know before the account can do anything else
-	// (see requireRole/handleChangePasswordSubmit). Leaving the field blank on an edit keeps the
-	// existing password AND its existing MustChangePassword state untouched.
+	// Any password an admin types here is a temporary one the account holder never chose — the
+	// "force change" checkbox (checked by default) makes them replace it with something only they
+	// know before the account can do anything else (see requireRole/handleChangePasswordSubmit).
+	// Leaving the password field blank on an edit keeps the existing password AND its existing
+	// MustChangePassword state untouched, regardless of the checkbox.
 	passwordHash := ""
 	mustChangePassword := false
 	if plaintext := r.PostForm.Get("password"); plaintext != "" {
 		sum := sha256.Sum256([]byte(plaintext))
 		passwordHash = hex.EncodeToString(sum[:])
-		mustChangePassword = true
+		mustChangePassword = r.PostForm.Get("force_password_change") != ""
 	} else if originalUsername != "" {
 		if existing, ok := cfg.UserByUsername(originalUsername); ok {
 			passwordHash = existing.PasswordSHA256
@@ -495,7 +496,12 @@ th, td { border-bottom: 1px solid var(--line); padding: var(--space-2) var(--spa
 th { font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .05em; color: var(--ink-soft); }
 td.mono { font-family: var(--font-mono); font-size: var(--text-sm); }
 label { display: block; font-size: var(--text-sm); font-weight: 600; color: var(--ink-soft); margin: var(--space-3) 0 var(--space-1); text-transform: uppercase; letter-spacing: .03em; }
-input:not([type=submit]), select { display: block; width: 100%; max-width: 22rem; }
+input:not([type=submit]):not([type=checkbox]), select { display: block; width: 100%; max-width: 22rem; }
+.checkbox-label {
+  display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); font-weight: 400;
+  color: var(--ink); text-transform: none; letter-spacing: normal; margin: var(--space-3) 0 var(--space-1);
+}
+.checkbox-label input[type=checkbox] { width: auto; margin: 0; }
 form button[type=submit]:not(.danger):not(.ghost) { margin-top: var(--space-4); }
 .add-room { margin-top: var(--space-4); padding: var(--space-4) var(--space-5); width: fit-content; }
 .add-room summary { cursor: pointer; font-weight: 600; color: var(--blue); }
@@ -595,6 +601,7 @@ they can see and do — manager gets status plus wake-mode control, viewer gets 
 <option value="viewer">Viewer — status only, read-only</option>
 </select>
 <label for="u-password">Password (leave blank to keep existing)</label><input id="u-password" type="text" name="password">
+<label for="u-force-change" class="checkbox-label"><input id="u-force-change" type="checkbox" name="force_password_change" checked> Force user to change password on first login</label>
 <button type="submit">Save access</button>
 </form>
 </details>
