@@ -263,6 +263,14 @@ func (s *Server) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	username := r.PostForm.Get("username")
+	// Revoking your own account mid-session is a footgun — it doesn't even end the session
+	// immediately (that only happens on next auth check), so it's confusing without protecting
+	// anything a deliberate "last admin" rejection in WithoutUser doesn't already cover.
+	if sess, ok := s.currentAdminSession(r); ok && strings.EqualFold(sess.Username, username) {
+		s.log.Error("admin user delete rejected", "username", username, "err", "cannot revoke your own account")
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper("you can't revoke your own account")+"#access", http.StatusSeeOther)
+		return
+	}
 	newCfg, err := s.cfg.Load().WithoutUser(username)
 	if err != nil {
 		s.log.Error("admin user delete rejected", "username", username, "err", err)
@@ -579,13 +587,14 @@ form button[type=submit]:not(.danger):not(.ghost) { margin-top: var(--space-4); 
 they can see and do — manager gets status plus wake-mode control, viewer gets status only.</p>
 <table>
 <tr><th>Username</th><th>Role</th><th></th></tr>
+{{$me := .Username}}
 {{range .View.Users}}
 <tr>
 <td class="mono">{{.Username}}</td><td>{{.Role}}</td>
-<td><form method="POST" action="/admin/access/delete" style="display:inline">
+<td>{{if eq .Username $me}}<span class="mono" title="You can't revoke your own account">(you)</span>{{else}}<form method="POST" action="/admin/access/delete" style="display:inline">
 <input type="hidden" name="username" value="{{.Username}}">
 <button type="submit" class="danger" onclick="return confirm('Revoke access for {{.Username}}?')">Revoke</button>
-</form></td>
+</form>{{end}}</td>
 </tr>
 {{end}}
 </table>

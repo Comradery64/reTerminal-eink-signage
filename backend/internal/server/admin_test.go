@@ -483,3 +483,45 @@ func TestAdminRevokeAccessRejectsRemovingLastAdmin(t *testing.T) {
 		t.Fatal("removing the last admin must be rejected, account should still exist")
 	}
 }
+
+// TestAdminCannotRevokeOwnAccountEvenWithAnotherAdminPresent isolates the self-revoke guard from
+// the last-admin guard above: a second admin exists, so removing testAdminUsername would NOT
+// leave the fleet without an admin — the rejection here must come from acting on your own logged
+// -in account, not from the last-admin rule.
+func TestAdminCannotRevokeOwnAccountEvenWithAnotherAdminPresent(t *testing.T) {
+	s := testServerWithAuth(t)
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+	client := loggedInAdminClient(t, srv)
+
+	if _, err := client.PostForm(srv.URL+"/admin/access/save", url.Values{
+		"username": {"secondadmin"}, "password": {"second-pw"}, "role": {"admin"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := client.PostForm(srv.URL+"/admin/access/delete", url.Values{"username": {testAdminUsername}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("want redirect, got %d", resp.StatusCode)
+	}
+	if _, ok := s.cfg.Load().UserByUsername(testAdminUsername); !ok {
+		t.Fatal("revoking your own account must be rejected even when another admin exists")
+	}
+
+	// A DIFFERENT admin revoking testAdminUsername (not their own account) must still work.
+	jar, _ := cookiejar.New(nil)
+	secondClient := srv.Client()
+	secondClient.Jar = jar
+	if _, err := secondClient.PostForm(srv.URL+"/admin/login", url.Values{"username": {"secondadmin"}, "password": {"second-pw"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := secondClient.PostForm(srv.URL+"/admin/access/delete", url.Values{"username": {testAdminUsername}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.cfg.Load().UserByUsername(testAdminUsername); ok {
+		t.Fatal("a different admin must still be able to revoke another account")
+	}
+}
