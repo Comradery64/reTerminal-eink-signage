@@ -142,10 +142,13 @@ func TestProvisionManifestMatchesPartitionLayout(t *testing.T) {
 	if !m.NewInstallPromptErase {
 		t.Error("new_install_prompt_erase must be true, or a re-flashed unit keeps stale otadata and boots the old image")
 	}
+	// Offsets mirror firmware/partitions.csv exactly, and the set mirrors the flash command
+	// `idf.py build` prints. ota_data_initial.bin at 0x10000 is load-bearing — see firmwareImages.
 	want := []espWebToolsPart{
 		{Path: "/firmware/bootloader.bin", Offset: 0x0},
 		{Path: "/firmware/partition-table.bin", Offset: 0x8000},
 		{Path: "nvs.bin", Offset: 0x9000},
+		{Path: "/firmware/ota_data_initial.bin", Offset: 0x10000},
 		{Path: "/firmware/meeting_display.bin", Offset: 0x20000},
 	}
 	got := m.Builds[0].Parts

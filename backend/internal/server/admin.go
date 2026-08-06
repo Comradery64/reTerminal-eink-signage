@@ -227,15 +227,42 @@ func (s *Server) handleAdminSaveAlerts(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin?saved=alerts", http.StatusSeeOther)
 }
 
+// handleAdminSaveFleetWifi sets the fleet-wide Wi-Fi SSID used by the provisioning wizard. Only
+// the SSID — the PSK stays in the deployment's Secret / env (${MD_WIFI_PSK}) and has no form
+// field, because a fleet-wide credential readable from a web page is exactly what the wizard's
+// server-side image assembly exists to avoid.
+func (s *Server) handleAdminSaveFleetWifi(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	newCfg, err := s.cfg.Load().WithFleetWifiSSID(strings.TrimSpace(r.PostForm.Get("wifi_ssid")))
+	if err != nil {
+		s.log.Error("admin fleet wifi save rejected", "err", err)
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#add-device", http.StatusSeeOther)
+		return
+	}
+	if err := s.applyConfig(r.Context(), newCfg, false); err != nil {
+		s.log.Error("admin fleet wifi save failed to persist", "err", err)
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#add-device", http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/admin?saved=add-device#add-device", http.StatusSeeOther)
+}
+
 func (s *Server) handleAdminSaveFirmware(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
+	// WebToolsURL has no field on this form, so carry the existing value forward rather than
+	// letting a version/url/dir edit blank it — the same silent-wipe shape as the room-token bug
+	// fixed in 3c043ce. Blanking it would render an empty <script src> on the next page load.
 	fw := config.FirmwareConfig{
-		Version: r.PostForm.Get("version"),
-		URL:     r.PostForm.Get("url"),
-		Dir:     r.PostForm.Get("dir"),
+		Version:     r.PostForm.Get("version"),
+		URL:         r.PostForm.Get("url"),
+		Dir:         r.PostForm.Get("dir"),
+		WebToolsURL: s.cfg.Load().Firmware.WebToolsURL,
 	}
 	newCfg, err := s.cfg.Load().WithFirmware(fw)
 	if err != nil {
@@ -668,12 +695,37 @@ form button[type=submit]:not(.danger):not(.ghost) { margin-top: var(--space-4); 
 </details>
 </section>
 
-<section class="section" id="add-device">
+<section class="section {{if eq .SavedSection "add-device"}}flash{{end}}" id="add-device">
 <h2>Add a device</h2>
 <p>Flash a blank display over USB, straight from this page — no ESP-IDF, no terminal. Needs
 Chrome or Edge (Firefox and Safari have no WebSerial).</p>
 
 <div id="wiz-blocked" class="banner banner-error" hidden></div>
+
+<details class="surface add-room"{{if not .View.Fleet.WifiSSID}} open{{end}}>
+<summary>Fleet Wi-Fi &amp; firmware images</summary>
+<p class="hint">Every display joins the same network, so these are set once for the whole fleet
+rather than per device.</p>
+<form method="POST" action="/admin/fleet/save">
+<label for="fl-ssid">Fleet Wi-Fi SSID</label>
+<input id="fl-ssid" type="text" name="wifi_ssid" value="{{.View.Fleet.WifiSSID}}" placeholder="the network every display joins">
+<button type="submit">Save fleet Wi-Fi</button>
+</form>
+<p class="hint">
+Wi-Fi password: {{if .View.Fleet.WifiPSKConfigured}}<strong>configured</strong>{{else}}<strong>not set</strong>{{end}}.
+Not editable here by design — it is a fleet-wide secret, so it comes from the deployment's
+environment as <span class="mono">MD_WIFI_PSK</span> (the <span class="mono">wifi-psk</span> key of
+the <span class="mono">broker-secrets</span> Secret on k3s, or <span class="mono">broker.env</span> /
+<span class="mono">.env</span> on the other tiers).
+</p>
+<p class="hint">
+Firmware images: set <strong>Local serve directory</strong> in the
+<a href="#firmware">Firmware</a> section to a directory containing
+<span class="mono">bootloader.bin</span>, <span class="mono">partition-table.bin</span>,
+<span class="mono">ota_data_initial.bin</span>, and <span class="mono">meeting_display.bin</span>
+from <span class="mono">idf.py build</span>.
+</p>
+</details>
 
 <div id="wiz-body" hidden>
 <form id="wiz-form" onsubmit="return false">

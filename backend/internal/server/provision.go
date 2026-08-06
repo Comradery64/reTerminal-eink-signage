@@ -24,6 +24,7 @@ const (
 	offsetBootloader     = 0x0     // ESP32-S3 boots from 0; other targets use 0x1000
 	offsetPartitionTable = 0x8000  // partition table
 	offsetNVS            = 0x9000  // `nvs` partition — the provisioning secrets
+	offsetOTAData        = 0x10000 // `otadata` — which app slot the bootloader selects
 	offsetApp            = 0x20000 // `ota_0`, the first app slot
 
 	// provisionTTL bounds how long a minted image stays fetchable. Long enough for an operator to
@@ -32,14 +33,21 @@ const (
 	provisionTTL = 15 * time.Minute
 )
 
-// firmwareImages are the three build artifacts the wizard flashes alongside the NVS image, in
-// ascending flash offset. Names match what `idf.py build` produces for project(meeting_display).
+// firmwareImages are the build artifacts the wizard flashes alongside the per-device NVS image,
+// in ascending flash offset. This is exactly the set `idf.py build` prints in its own flash
+// command, and omitting any of them produces a unit that doesn't boot.
+//
+// ota_data_initial.bin is the one that looks skippable and isn't: it points `otadata` at ota_0.
+// A full erase happens to leave otadata blank (which the bootloader also reads as "use ota_0"),
+// but an operator who declines the erase prompt would otherwise keep stale otadata from a
+// previous flash — possibly selecting ota_1, which this manifest never writes.
 var firmwareImages = []struct {
 	File   string
 	Offset int
 }{
 	{"bootloader.bin", offsetBootloader},
 	{"partition-table.bin", offsetPartitionTable},
+	{"ota_data_initial.bin", offsetOTAData},
 	{"meeting_display.bin", offsetApp},
 }
 
@@ -234,6 +242,7 @@ func (s *Server) handleProvisionManifest(w http.ResponseWriter, r *http.Request)
 		{Path: "/firmware/bootloader.bin", Offset: offsetBootloader},
 		{Path: "/firmware/partition-table.bin", Offset: offsetPartitionTable},
 		{Path: "nvs.bin", Offset: offsetNVS}, // relative: /admin/provision/<nonce>/nvs.bin
+		{Path: "/firmware/ota_data_initial.bin", Offset: offsetOTAData},
 		{Path: "/firmware/meeting_display.bin", Offset: offsetApp},
 	}
 

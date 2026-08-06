@@ -594,6 +594,19 @@ func (c *Config) WithFirmware(f FirmwareConfig) (*Config, error) {
 	return next, nil
 }
 
+// WithFleetWifiSSID returns a deep copy of c with the fleet Wi-Fi SSID replaced, validated before
+// being returned. Only the SSID: the PSK is a secret sourced from ${MD_WIFI_PSK} and is never
+// settable from a web form, so this deliberately carries the existing WifiPSK forward untouched
+// rather than accepting one from a caller.
+func (c *Config) WithFleetWifiSSID(ssid string) (*Config, error) {
+	next := c.clone()
+	next.Fleet.WifiSSID = ssid
+	if err := next.Validate(); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
 // WithUser returns a deep copy of c with a user matching updated.Username (case-insensitive)
 // replaced, or appended if new, validated before being returned. This is the only way /admin's
 // Access panel grants or edits an employee's login — callers never touch c.Users directly.

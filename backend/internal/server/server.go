@@ -168,6 +168,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/wake/save", s.requireRole(adminUI, s.handleAdminSaveWakeDefaults))
 	mux.HandleFunc("POST /admin/alerts/save", s.requireRole(adminUI, s.handleAdminSaveAlerts))
 	mux.HandleFunc("POST /admin/firmware/save", s.requireRole(adminUI, s.handleAdminSaveFirmware))
+	mux.HandleFunc("POST /admin/fleet/save", s.requireRole(adminUI, s.handleAdminSaveFleetWifi))
 	mux.HandleFunc("POST /admin/access/save", s.requireRole(adminUI, s.handleAdminSaveUser))
 	mux.HandleFunc("POST /admin/access/delete", s.requireRole(adminUI, s.handleAdminDeleteUser))
 	// "Add a device" wizard. All admin-gated: the manifest and the NVS image are fetched by ESP

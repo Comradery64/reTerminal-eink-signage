@@ -28,11 +28,19 @@ type UserView struct {
 	Role     string
 }
 
+// FleetView is the provisioning wizard's fleet Wi-Fi state. WifiPSKConfigured never exposes the
+// PSK itself, only whether one is present — mirroring RoomView.TokenConfigured.
+type FleetView struct {
+	WifiSSID          string
+	WifiPSKConfigured bool
+}
+
 // View is the full admin page's data.
 type View struct {
 	Wake     config.WakeConfig
 	Alerts   config.AlertConfig
 	Firmware config.FirmwareConfig
+	Fleet    FleetView
 	Rooms    []RoomView
 	Users    []UserView
 }
@@ -63,5 +71,15 @@ func Build(cfg *config.Config) View {
 		users = append(users, UserView{Username: u.Username, Role: u.Role})
 	}
 
-	return View{Wake: cfg.Wake, Alerts: cfg.Alerts, Firmware: cfg.Firmware, Rooms: rooms, Users: users}
+	return View{
+		Wake:     cfg.Wake,
+		Alerts:   cfg.Alerts,
+		Firmware: cfg.Firmware,
+		Fleet: FleetView{
+			WifiSSID:          cfg.Fleet.WifiSSID,
+			WifiPSKConfigured: cfg.Fleet.WifiPSK != "",
+		},
+		Rooms: rooms,
+		Users: users,
+	}
 }
