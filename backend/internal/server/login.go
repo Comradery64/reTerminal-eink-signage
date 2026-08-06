@@ -179,13 +179,28 @@ func (s *Server) handleLogout(ui roleUI) http.HandlerFunc {
 
 // handleChangePasswordPage renders the form a MustChangePassword session is redirected to by
 // requireRole. It's the only page such a session can reach until the password is replaced.
+//
+// ?error=1 means the client-side mismatch/blank case (handleChangePasswordSubmit's first check);
+// any other ?error= value is a real persist failure message from applyConfig, and must be shown
+// verbatim — collapsing it to the generic mismatch text would tell a locked-out human a fact that
+// isn't true (see the persist-failure branch in handleChangePasswordSubmit below).
 func (s *Server) handleChangePasswordPage(ui roleUI) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		var msg string
+		switch e := r.URL.Query().Get("error"); e {
+		case "":
+			// no error
+		case "1":
+			msg = "Passwords must match and can't be blank."
+		default:
+			msg = e
+		}
 		_ = changePasswordPageTmpl.Execute(w, changePasswordPageView{
-			RoleLabel: ui.label,
-			Path:      ui.changePasswordPath,
-			Error:     r.URL.Query().Get("error") != "",
+			RoleLabel:    ui.label,
+			Path:         ui.changePasswordPath,
+			ErrorMsg:     msg,
+			PersistStrip: s.persistStrip(),
 		})
 	}
 }
@@ -233,7 +248,25 @@ func (s *Server) handleChangePasswordSubmit(ui roleUI) http.HandlerFunc {
 			http.Redirect(w, r, ui.changePasswordPath+"?error=1", http.StatusSeeOther)
 			return
 		}
-		s.applyConfig(newCfg, true)
+		if err := s.applyConfig(r.Context(), newCfg, true); err != nil {
+			s.log.Error("change password not saved; applying in memory so the account isn't locked out", "username", sess.Username, "err", err)
+			// Fail-closed is right for an ordinary /admin or /manager edit: persistence didn't
+			// happen, but the account keeps working and can retry. It is wrong here: requireRole
+			// bounces a MustChangePassword session to this exact path for every other page (see
+			// requireRole above), so refusing to proceed would permanently lock the account out of
+			// the whole UI until whatever broke persistence — e.g. today's ConfigMap RBAC 403,
+			// the exact failure this design exists to surface — gets fixed by a human who cannot
+			// reach any admin page to fix it. applyConfig has already recorded the failure (surfaced
+			// by the persistStrip on every subsequent page and by GET /api/v1/config-persistence),
+			// so nobody is told "saved" when nothing was saved; we still swap the new password into
+			// the live config so the human gets in. This is exactly what persistence mode "none"
+			// already promises elsewhere in this UI: a real but ephemeral change until persistence
+			// is fixed, at which point the account will need to change its password again.
+			s.writeMu.Lock()
+			s.cfg.Store(newCfg)
+			s.refreshDerived(newCfg)
+			s.writeMu.Unlock()
+		}
 
 		// Preserve Pending2FA from the old session — a 2FA-enrolled account whose password was
 		// just reset still has to verify its second factor next, not skip straight to homePath.
@@ -330,9 +363,10 @@ button[type=submit] { width: 100%; }
 `))
 
 type changePasswordPageView struct {
-	RoleLabel string
-	Path      string
-	Error     bool
+	RoleLabel    string
+	Path         string
+	ErrorMsg     string // empty means no error; see handleChangePasswordPage for how this is derived
+	PersistStrip persistStripView
 }
 
 var changePasswordPageTmpl = template.Must(template.New("change-password").Parse(`<!doctype html>
@@ -355,7 +389,8 @@ button[type=submit] { width: 100%; }
 ` + brandMark + `
 <h1>Choose a password</h1>
 <p>Your {{.RoleLabel}} account was just granted or reset with a temporary password. Pick a new one only you know before continuing.</p>
-{{if .Error}}<p class="banner banner-error" style="margin:var(--space-3) 0 0">Passwords must match and can't be blank.</p>{{end}}
+<p class="banner {{.PersistStrip.Class}}" style="margin:var(--space-3) 0 0">{{.PersistStrip.Message}}</p>
+{{if .ErrorMsg}}<p class="banner banner-error" style="margin:var(--space-3) 0 0">{{.ErrorMsg}}</p>{{end}}
 <form method="POST" action="{{.Path}}">
 <input type="password" name="password" placeholder="New password" autofocus required autocomplete="new-password">
 <input type="password" name="password_confirm" placeholder="Confirm new password" required autocomplete="new-password">

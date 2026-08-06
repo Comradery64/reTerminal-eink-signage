@@ -23,6 +23,7 @@ func (s *Server) handleAdminPage(w http.ResponseWriter, r *http.Request) {
 		View:         admin.Build(cfg),
 		Error:        r.URL.Query().Get("error"),
 		SavedSection: r.URL.Query().Get("saved"),
+		PersistStrip: s.persistStrip(),
 	}
 	// Two-factor status is about the CURRENT session's own account, not something one admin sets
 	// for another — pulled straight from cfg, same as any other per-account field.
@@ -66,8 +67,22 @@ func (s *Server) handleAdminSaveRoom(w http.ResponseWriter, r *http.Request) {
 	}
 	existing, hasExisting := cfg.RoomByDeviceID(lookupID)
 
+	// Token precedence, most specific first:
+	//   token_sha256 — the provisioning wizard's path. It generates the device token server-side
+	//     (internal/nvs), writes the plaintext straight into the unit's NVS over USB, and sends
+	//     back only the hash, so no plaintext token ever crosses the network a second time.
+	//   token        — the manual/curl path, unchanged: plaintext in, hashed here.
+	//   existing     — neither supplied, so keep what the room already had. This fallback is what
+	//     stops an unrelated edit (fixing a typo in the name) from silently wiping the token; see
+	//     the doc comment above.
 	tokenHash := ""
-	if plaintext := r.PostForm.Get("token"); plaintext != "" {
+	if hashed := r.PostForm.Get("token_sha256"); hashed != "" {
+		if !isSHA256Hex(hashed) {
+			http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper("token_sha256 must be 64 lowercase hex characters"), http.StatusSeeOther)
+			return
+		}
+		tokenHash = hashed
+	} else if plaintext := r.PostForm.Get("token"); plaintext != "" {
 		sum := sha256.Sum256([]byte(plaintext))
 		tokenHash = hex.EncodeToString(sum[:])
 	} else if hasExisting {
@@ -92,10 +107,21 @@ func (s *Server) handleAdminSaveRoom(w http.ResponseWriter, r *http.Request) {
 		flatSeconds = &n
 	}
 
+	// Label follows the same keep-what-exists rule as the token and the wake overrides: the form
+	// omits it entirely for single-display rooms, and a resubmit that doesn't mention it must not
+	// clear the label off a panel that has one (which would then fail validation for its sibling
+	// too). An explicit empty submission still can't clear it here; remove the second display
+	// instead, which is the only case where clearing is correct.
+	label := r.PostForm.Get("label")
+	if label == "" && hasExisting {
+		label = existing.Label
+	}
+
 	room := config.Room{
 		DeviceID:            deviceID,
 		Name:                r.PostForm.Get("name"),
 		Room:                r.PostForm.Get("room"),
+		Label:               label,
 		TokenSHA256:         tokenHash,
 		WakeMode:            wakeMode,
 		FlatIntervalSeconds: flatSeconds,
@@ -113,7 +139,11 @@ func (s *Server) handleAdminSaveRoom(w http.ResponseWriter, r *http.Request) {
 			newCfg = withoutOld
 		}
 	}
-	s.applyConfig(newCfg, true) // tokens/names changed — rebuild derived caches
+	if err := s.applyConfig(r.Context(), newCfg, true); err != nil { // tokens/names changed — rebuild derived caches
+		s.log.Error("admin room save failed to persist", "device", deviceID, "err", err)
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#rooms", http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/admin?saved=rooms", http.StatusSeeOther)
 }
 
@@ -129,7 +159,11 @@ func (s *Server) handleAdminDeleteRoom(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error()), http.StatusSeeOther)
 		return
 	}
-	s.applyConfig(newCfg, true)
+	if err := s.applyConfig(r.Context(), newCfg, true); err != nil {
+		s.log.Error("admin room delete failed to persist", "device", deviceID, "err", err)
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#rooms", http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/admin?saved=rooms", http.StatusSeeOther)
 }
 
@@ -158,7 +192,11 @@ func (s *Server) handleAdminSaveWakeDefaults(w http.ResponseWriter, r *http.Requ
 		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error()), http.StatusSeeOther)
 		return
 	}
-	s.applyConfig(newCfg, false)
+	if err := s.applyConfig(r.Context(), newCfg, false); err != nil {
+		s.log.Error("admin wake defaults save failed to persist", "err", err)
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#wake", http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/admin?saved=wake", http.StatusSeeOther)
 }
 
@@ -180,7 +218,11 @@ func (s *Server) handleAdminSaveAlerts(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error()), http.StatusSeeOther)
 		return
 	}
-	s.applyConfig(newCfg, false)
+	if err := s.applyConfig(r.Context(), newCfg, false); err != nil {
+		s.log.Error("admin alerts save failed to persist", "err", err)
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#alerts", http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/admin?saved=alerts", http.StatusSeeOther)
 }
 
@@ -200,7 +242,11 @@ func (s *Server) handleAdminSaveFirmware(w http.ResponseWriter, r *http.Request)
 		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error()), http.StatusSeeOther)
 		return
 	}
-	s.applyConfig(newCfg, false)
+	if err := s.applyConfig(r.Context(), newCfg, false); err != nil {
+		s.log.Error("admin firmware save failed to persist", "err", err)
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#firmware", http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/admin?saved=firmware", http.StatusSeeOther)
 }
 
@@ -253,7 +299,11 @@ func (s *Server) handleAdminSaveUser(w http.ResponseWriter, r *http.Request) {
 			newCfg = withoutOld
 		}
 	}
-	s.applyConfig(newCfg, true) // login directory changed — rebuild it immediately
+	if err := s.applyConfig(r.Context(), newCfg, true); err != nil { // login directory changed — rebuild it immediately
+		s.log.Error("admin user save failed to persist", "username", username, "err", err)
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#access", http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/admin?saved=access", http.StatusSeeOther)
 }
 
@@ -277,7 +327,11 @@ func (s *Server) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#access", http.StatusSeeOther)
 		return
 	}
-	s.applyConfig(newCfg, true)
+	if err := s.applyConfig(r.Context(), newCfg, true); err != nil {
+		s.log.Error("admin user delete failed to persist", "username", username, "err", err)
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#access", http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/admin?saved=access", http.StatusSeeOther)
 }
 
@@ -368,7 +422,11 @@ func (s *Server) handleTOTPEnableSubmit(w http.ResponseWriter, r *http.Request) 
 		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#security", http.StatusSeeOther)
 		return
 	}
-	s.applyConfig(newCfg, true)
+	if err := s.applyConfig(r.Context(), newCfg, true); err != nil {
+		s.log.Error("2fa enable failed to persist", "username", sess.Username, "err", err)
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#security", http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/admin?saved=security#security", http.StatusSeeOther)
 }
 
@@ -396,7 +454,11 @@ func (s *Server) handleTOTPDisableSubmit(w http.ResponseWriter, r *http.Request)
 		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#security", http.StatusSeeOther)
 		return
 	}
-	s.applyConfig(newCfg, true)
+	if err := s.applyConfig(r.Context(), newCfg, true); err != nil {
+		s.log.Error("2fa disable failed to persist", "username", sess.Username, "err", err)
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#security", http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/admin?saved=security#security", http.StatusSeeOther)
 }
 
@@ -452,6 +514,22 @@ this account ({{.Username}}).</p>
 </html>
 `))
 
+// isSHA256Hex reports whether s is exactly 64 lowercase hex characters. Lowercase specifically:
+// config.Validate only checks the length, and everything that writes a hash (hex.EncodeToString
+// here, openssl in tools/provision_device.sh, internal/nvs) emits lowercase — accepting mixed case
+// would let the same token be stored two ways and compare unequal at device auth time.
+func isSHA256Hex(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 func formInt(r *http.Request, key string) int {
 	v, _ := strconv.Atoi(r.PostForm.Get(key))
 	return v
@@ -473,6 +551,7 @@ type adminPageData struct {
 	SavedSection string // e.g. "rooms" — which section to flash, empty on a plain page load
 	Username     string // current session's own account — 2FA is self-service, not admin-on-admin
 	TOTPEnabled  bool
+	PersistStrip persistStripView // standing config-persistence status, rendered on every page load
 }
 
 var adminPageTmpl = template.Must(template.New("admin").Parse(`<!doctype html>
@@ -541,6 +620,7 @@ form button[type=submit]:not(.danger):not(.ghost) { margin-top: var(--space-4); 
 <form method="POST" action="/admin/logout"><button type="submit" class="ghost">Log out</button></form>
 </nav>
 <main class="main">
+<p class="banner {{.PersistStrip.Class}}" style="margin-left:0;margin-right:0">{{.PersistStrip.Message}}</p>
 {{if .Error}}<p class="banner banner-error" style="margin-left:0;margin-right:0">{{.Error}}</p>{{end}}
 
 <section class="section {{if eq .SavedSection "rooms"}}flash{{end}}" id="rooms">
@@ -549,7 +629,7 @@ form button[type=submit]:not(.danger):not(.ghost) { margin-top: var(--space-4); 
 <tr><th>Device</th><th>Name</th><th>Calendar</th><th>Wake override</th><th>Token</th><th></th></tr>
 {{range .View.Rooms}}
 <tr>
-<td class="mono">{{.DeviceID}}</td><td>{{.Name}}</td><td class="mono">{{.Room}}</td>
+<td class="mono">{{.DeviceID}}</td><td>{{.Name}}{{if .Label}} <span class="mono">— {{.Label}}</span>{{end}}</td><td class="mono">{{.Room}}</td>
 <td>{{if .WakeMode}}{{.WakeMode}} ({{.FlatIntervalSeconds}}s){{else}}fleet default{{end}}</td>
 <td>{{if .TokenConfigured}}configured{{else}}<em>none</em>{{end}}</td>
 <td><form method="POST" action="/admin/rooms/delete" style="display:inline">
@@ -566,6 +646,8 @@ form button[type=submit]:not(.danger):not(.ghost) { margin-top: var(--space-4); 
 <label for="r-device">Device ID</label><input id="r-device" type="text" name="device_id" required>
 <label for="r-name">Name</label><input id="r-name" type="text" name="name" required>
 <label for="r-room">Calendar (room email)</label><input id="r-room" type="text" name="room" required>
+<label for="r-label">Panel label (only for rooms with more than one display, e.g. "Door", "Interior wall")</label>
+<input id="r-label" type="text" name="label" placeholder="leave blank for a single-display room">
 <label for="r-token">Device token (leave blank to keep existing)</label><input id="r-token" type="text" name="token">
 <label for="r-wake">Wake override (leave unchanged to keep existing)</label>
 <select id="r-wake" name="wake_mode_override">

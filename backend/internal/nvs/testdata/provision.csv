@@ -1,0 +1,6 @@
+key,type,encoding,value
+prov,namespace,,
+device_id,data,string,rt-example
+token,data,string,AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJKKK
+wifi_ssid,data,string,Example_Fleet_WiFi
+wifi_psk,data,string,dummy-psk-value

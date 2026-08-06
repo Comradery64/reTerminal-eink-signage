@@ -21,9 +21,10 @@ type managerRow struct {
 }
 
 type managerPageData struct {
-	Rows      []managerRow
-	SavedRoom string // device_id just saved, for the one-time flash — empty if this was a plain load
-	ErrorMsg  string // pre-written for the reader, never a raw Go error (see handleManagerSaveWake)
+	Rows         []managerRow
+	SavedRoom    string           // device_id just saved, for the one-time flash — empty if this was a plain load
+	ErrorMsg     string           // pre-written for the reader, never a raw Go error (see handleManagerSaveWake)
+	PersistStrip persistStripView // standing config-persistence status, rendered on every page load
 }
 
 func (s *Server) handleManagerPage(w http.ResponseWriter, r *http.Request) {
@@ -50,12 +51,18 @@ func (s *Server) handleManagerPage(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	data := managerPageData{Rows: rows, SavedRoom: r.URL.Query().Get("saved")}
+	data := managerPageData{Rows: rows, SavedRoom: r.URL.Query().Get("saved"), PersistStrip: s.persistStrip()}
 	switch r.URL.Query().Get("error") {
 	case "invalid_interval":
 		data.ErrorMsg = "Enter a whole number of minutes for Simple mode — that value didn't save."
 	case "rejected":
 		data.ErrorMsg = "That change didn't save. Try again, or ask IT if it keeps failing."
+	case "persist":
+		// Carries the real composed persistFailureMessage (see applyConfig/handleManagerSaveWake)
+		// through as its own error code, distinct from "rejected" above: a validation rejection is
+		// retry-proof advice ("fix the value"), a persist failure needs the actual reason (e.g. a
+		// ConfigMap RBAC 403) or the reader will "try again" forever on something retrying can't fix.
+		data.ErrorMsg = r.URL.Query().Get("msg")
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -89,7 +96,12 @@ func (s *Server) handleManagerSaveWake(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/manager?error=rejected", http.StatusSeeOther)
 		return
 	}
-	s.applyConfig(newCfg, false) // wake override never touches tokens/names/credentials
+	// wake override never touches tokens/names/credentials, so refreshCaches=false
+	if err := s.applyConfig(r.Context(), newCfg, false); err != nil {
+		s.log.Error("manager wake save failed to persist", "device", deviceID, "err", err)
+		http.Redirect(w, r, "/manager?error=persist&msg="+template.URLQueryEscaper(err.Error()), http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/manager?saved="+template.URLQueryEscaper(deviceID), http.StatusSeeOther)
 }
 
@@ -131,6 +143,7 @@ var managerPageTmpl = template.Must(template.New("manager").Parse(`<!doctype htm
 <form method="POST" action="/manager/logout"><button type="submit" class="ghost">Log out</button></form>
 </div>
 </div>
+<p class="banner {{.PersistStrip.Class}}">{{.PersistStrip.Message}}</p>
 {{if .ErrorMsg}}<p class="banner banner-error">{{.ErrorMsg}}</p>{{end}}
 <div class="grid">
 {{range .Rows}}

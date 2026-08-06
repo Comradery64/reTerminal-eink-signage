@@ -1,0 +1,53 @@
+[Unit]
+Description=Meeting Displays broker (reTerminal e-ink signage)
+Documentation=https://github.com/Comradery64/reTerminal-eink-signage
+# Only meaningful if this host also has network-online.target configured (not all minimal
+# installs do) — the broker itself retries calendar/WIF calls, so this is a nicety, not a hard dep.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=meeting-displays
+Group=meeting-displays
+# StateDirectory creates (and owns, mode 0750) /var/lib/meeting-displays for us — this is where
+# the sqlite telemetry backend's telemetry.db and wiftoken's minted token live. Systemd creates it
+# before ExecStart runs and removes it only if RuntimeDirectory semantics were used instead (they
+# aren't) — StateDirectory persists across reboots, which is the point: telemetry history and the
+# WIF token file must survive a restart, unlike a RuntimeDirectory under /run.
+StateDirectory=meeting-displays
+# ConfigurationDirectory creates /etc/meeting-displays (mode 0750, owned by User=/Group=) if it
+# doesn't already exist. The actual config.yaml, broker.env, and gcp/ subdir are provisioned by
+# the install runbook in README.md, not by systemd itself.
+ConfigurationDirectory=meeting-displays
+# "-" prefix: the file is optional, so a fresh install without secrets configured yet still starts
+# (with alerts logging instead of webhooking, and login disabled until session_secret is set).
+EnvironmentFile=-/etc/meeting-displays/broker.env
+ExecStart=/usr/local/bin/broker -config /etc/meeting-displays/config.yaml
+Restart=on-failure
+RestartSec=5
+
+# ── Hardening ─────────────────────────────────────────────────────────────────
+# Deny-by-default posture matching this repo's zero-trust convention (see docs/SECURITY.md).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+# Port 8080 needs no privileged bind and no other capability — empty sets are the least privilege
+# this unit can run with, and CAP_NET_BIND_SERVICE is unnecessary since 8080 is unprivileged.
+CapabilityBoundingSet=
+AmbientCapabilities=
+MemoryDenyWriteExecute=yes
+# LOAD-BEARING: ProtectSystem=strict makes the entire filesystem read-only except what's listed
+# here (and StateDirectory/ConfigurationDirectory above, which systemd already grants write to).
+# The file config_persistence backend (config_persistence.mode: file, or "auto" resolving to it —
+# see config.tier1.example.yaml) does an atomic temp-file+rename INTO /etc/meeting-displays, which
+# is otherwise read-only under ProtectSystem=strict. Forget this line and every /admin or /manager
+# save fails with the new red banner (see docs/DEPLOY-TIERS.md) the moment this unit is deployed —
+# ReadWritePaths is what makes Tier 1 config persistence actually work, not just auto-detected.
+ReadWritePaths=/etc/meeting-displays
+
+[Install]
+WantedBy=multi-user.target

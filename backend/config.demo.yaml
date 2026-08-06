@@ -6,6 +6,11 @@
 #
 # The device token is the throwaway string "demo-token"; token_sha256 below is its SHA-256.
 # DO NOT use this config or token in production.
+#
+# Note: -demo forces config_persistence to "none" UNLESS you explicitly set a mode — either here
+# (a non-"auto" config_persistence.mode) or via -config-persistence — so that a click in /admin
+# never rewrites this git-tracked example file out from under you or another developer following
+# the README, unless you deliberately opted into that by naming a mode yourself.
 listen: ":8080"
 poll_interval: "10s"
 wake:

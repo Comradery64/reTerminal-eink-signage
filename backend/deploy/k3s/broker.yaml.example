@@ -88,6 +88,26 @@ data:
       min_renotify: "24h"
       webhook_url: "${ALERT_WEBHOOK_URL}"
       stale_after: "1h"   # feeds /api/v1/status; keep in sync with DisplayStale's `3600` in alerts.yaml
+    # Fleet-wide Wi-Fi for the /admin "Add a device" provisioning wizard. The PSK stays a ${VAR}
+    # reference so it lives in broker-secrets, not in this ConfigMap — MarshalForPersist restores
+    # the reference before any admin save writes the config back, so the expanded value never
+    # leaks into the ConfigMap either.
+    fleet:
+      wifi_ssid: "REPLACE_WITH_YOUR_SSID"
+      wifi_psk: "${MD_WIFI_PSK}"
+    # Spelled out explicitly (rather than left as the default "auto") so `kubectl get configmap
+    # broker-config -o yaml` shows the real, resolved behavior at a glance instead of requiring a
+    # reader to know k3s auto-detection rules. These are the SAME values "auto" already resolves to
+    # in-cluster (given the ServiceAccount/Role/RoleBinding below) — this block changes nothing.
+    # If this ever fails with a 403, see docs/DEPLOY-TIERS.md's Tier 3 triage checklist before
+    # assuming the broker code is at fault; the most common cause is the ServiceAccount below not
+    # actually being wired to the pod spec.
+    config_persistence:
+      mode: configmap
+      configmap:
+        namespace: meeting-displays
+        name: broker-config
+        key: config.yaml
     auth:
       # session_secret is a deploy-time sanity check (not used for signing — sessions are
       # server-side, see internal/auth) that a real secrets bundle was provisioned before login is
@@ -147,6 +167,12 @@ spec:
             - name: ALERT_WEBHOOK_URL
               valueFrom:
                 secretKeyRef: { name: broker-secrets, key: alert-webhook-url, optional: true }
+            # WPA2 pre-shared key the /admin "Add a device" wizard writes into each display's NVS.
+            # Optional: omit the key and the wizard reports that fleet Wi-Fi isn't configured
+            # (provisioning then stays on tools/provision_device.sh).
+            - name: MD_WIFI_PSK
+              valueFrom:
+                secretKeyRef: { name: broker-secrets, key: wifi-psk, optional: true }
             # Session-signing sanity check for the /admin, /manager, /dashboard logins — see
             # secret.example.yaml. Login accounts themselves live in the ConfigMap's `users:` list
             # above, not here (managed from /admin's Access panel after the first bootstrap admin).

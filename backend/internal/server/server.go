@@ -11,7 +11,7 @@ import (
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/auth"
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/cache"
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/config"
-	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/kube"
+	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/configstore"
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/notify"
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/telemetry"
 )
@@ -25,8 +25,16 @@ type Server struct {
 	tlm      *telemetry.Store
 	alerts   *notify.Manager
 	sessions *auth.SessionStore
-	kube     *kube.Client // nil when not running in-cluster (e.g. local/demo) — writes stay in-memory only
+	persist  configstore.Store // where an admin/manager write goes to become durable (see configwrite.go)
 	log      *slog.Logger
+
+	// writeMu serializes every admin/manager config write end-to-end (marshal -> persist ->
+	// cfg.Store -> refreshDerived — see applyConfig in configwrite.go), so two concurrent saves
+	// can never land in memory and in the durable backend in opposite orders.
+	writeMu sync.Mutex
+	// pstate is the standing summary of the persistence backend's health, rendered on every
+	// /admin and /manager page load and served at GET /api/v1/config-persistence.
+	pstate *persistState
 
 	// derived caches, recomputed from cfg by refreshDerived on New and on every admin/manager
 	// write (see admin.go/manager.go) — never read cfg's Rooms directly for these, or a write
@@ -37,14 +45,22 @@ type Server struct {
 	directory *auth.Directory
 }
 
-func New(cfg *config.Live, c *cache.Store, tlm *telemetry.Store, alerts *notify.Manager, log *slog.Logger) *Server {
-	s := &Server{cfg: cfg, cache: c, tlm: tlm, alerts: alerts, sessions: auth.NewSessionStore(sessionTTL), log: log}
-	s.refreshDerived(cfg.Load())
-	if kc, err := kube.NewInClusterClient(); err == nil {
-		s.kube = kc
-	} else {
-		log.Info("kube client unavailable — config writes will not persist to the ConfigMap", "err", err)
+// New wires the HTTP server. persist is the already-resolved config-persistence backend (see
+// configstore.New) — main.go owns choosing and constructing it (auto-detection, -demo forcing
+// "none", explicit-mode fail-fast) so Server itself stays agnostic to Kubernetes entirely.
+func New(cfg *config.Live, c *cache.Store, tlm *telemetry.Store, alerts *notify.Manager, persist configstore.Store, log *slog.Logger) *Server {
+	s := &Server{
+		cfg: cfg, cache: c, tlm: tlm, alerts: alerts,
+		sessions: auth.NewSessionStore(sessionTTL),
+		persist:  persist,
+		pstate:   &persistState{},
+		log:      log,
 	}
+	s.refreshDerived(cfg.Load())
+	// Seed the strip/API with the resolved backend's identity before any write ever happens, so
+	// the very first /admin page load already shows the truth instead of a blank "healthy" state
+	// that happens to look the same.
+	s.pstate.recordOK(persist.Mode(), persist.Target(), persist.Durable(), time.Time{})
 	return s
 }
 
@@ -95,6 +111,16 @@ func (s *Server) Handler() http.Handler {
 	// Cluster-internal-only, unauthenticated (same trust boundary as /metrics) — must never be
 	// added to the public Ingress; see docs/DASHBOARD.md Decisions.
 	mux.HandleFunc("GET /api/v1/status", s.handleStatusJSON)
+	// Machine-readable twin of the /admin and /manager persistence strip — the hook for a Tier 3
+	// blackbox probe or a Tier 1 cron to alert on. Deliberately in the SAME unauthenticated,
+	// internal-only group as /api/v1/status and /metrics above, not behind requireRole: an
+	// admin_session cookie is scoped to Path "/admin" (see setSessionCookies), which per RFC 6265
+	// never gets attached to a request under /api/v1/... — gating this behind requireRole made it
+	// permanently unreachable by any browser or curl, which is exactly the "fails open by 2xx-
+	// adjacent redirect, alert never fires" failure this endpoint exists to prevent. The trust
+	// boundary is unchanged: docs/DEPLOY-TIERS.md already tells operators to keep /metrics,
+	// /status, and /api/v1/status off any public listener, and this joins that same group.
+	mux.HandleFunc("GET /api/v1/config-persistence", s.handleConfigPersistenceJSON)
 	mux.HandleFunc("GET /status", s.handleStatusPage)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -139,6 +165,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/firmware/save", s.requireRole(adminUI, s.handleAdminSaveFirmware))
 	mux.HandleFunc("POST /admin/access/save", s.requireRole(adminUI, s.handleAdminSaveUser))
 	mux.HandleFunc("POST /admin/access/delete", s.requireRole(adminUI, s.handleAdminDeleteUser))
+	mux.HandleFunc("POST /admin/api/provision-nvs", s.requireRole(adminUI, s.handleProvisionNVS))
 	mux.HandleFunc("GET /manager/login", s.handleLoginPage(managerUI))
 	mux.HandleFunc("POST /manager/login", s.handleLoginSubmit(managerUI))
 	mux.HandleFunc("POST /manager/logout", s.handleLogout(managerUI))

@@ -6,8 +6,10 @@ and the backend work each depends on.
 
 ## Where things live
 
-- `backend/internal/telemetry/telemetry.go` — `md_last_render_seconds` gauge (the prerequisite
-  below), plus `Store.Snapshot` for structured (non-Prometheus-text) reads.
+- `backend/internal/telemetry/telemetry.go` — `md_last_render_seconds` gauge (age since a device
+  last actually reported `rendered: true`, distinct from `md_last_seen_seconds` which only tracks
+  check-ins — see the doc comment at `state.lastRendered`), plus `Store.Snapshot` for structured
+  (non-Prometheus-text) reads. Shipped; not a prerequisite for anything below.
 - `backend/internal/status` — derives each device's `ok` / `stale` / `low_battery` / `unreported`
   classification from `config.AlertConfig` (the same thresholds `notify.Manager` alerts on).
 - `backend/internal/server/status.go` — `GET /api/v1/status` (JSON) and `GET /status` (HTML table,
@@ -28,29 +30,20 @@ and the backend work each depends on.
 | Depends on | Your Prometheus + Grafana stack existing and being reachable | Nothing beyond the broker itself |
 | Data source | `/metrics` (already scraped) | New endpoint, reads the broker's in-memory state directly |
 | Auth | Whatever your Grafana instance already uses | Unauthenticated, cluster-internal-only (decided — see Decisions) |
-| Effort | Low (dashboard JSON only, if the one metric gap below is filled) | Medium (new handler + view) |
+| Effort | Low (dashboard JSON only — all metrics it needs, including `md_last_render_seconds`, already ship) | Medium (new handler + view) |
 
 They're not redundant: Grafana is the deep-dive/history tool (trends, alert correlation, already
-wired to Slack via `alerts.yaml`); the status page is a zero-dependency "is everything OK right
-now" view for someone without cluster/Grafana access.
+wired to Slack via `alerts.yaml`), available on **Tier 3 only**. The status page (Plan B) is the
+**zero-dependency default** — it needs nothing beyond the broker itself, works identically on all
+three deploy tiers (see `docs/DEPLOY-TIERS.md`), and is the only fleet-health view Tiers 1/2 have
+built in.
 
-## Prerequisite gap: no "last render" signal today
+## Plan A — Grafana dashboard (Tier 3 only)
 
-`backend/internal/telemetry/telemetry.go` stores only the **latest** report per device. Firmware
-already sends `rendered: bool` per wake (`firmware/main/telemetry.hpp`), but the broker never
-turns "did it render on the most recent report" into "how long since it last actually rendered."
-Right now `/metrics` can answer "is it checking in" (`md_last_seen_seconds`) but not "is it still
-actually refreshing the panel when content changes" — the more useful ghosting/hardware-health
-signal. Both plans below need this fixed first:
-
-- Add `lastRendered time.Time` to the telemetry `state` struct, updated only when `Report.RenderedBool`
-  is true.
-- Emit a new gauge: `md_last_render_seconds{device="..."}` (age since last actual repaint),
-  parallel to the existing `md_last_seen_seconds`.
-- This one change is small, additive, and unblocks both plans — do it regardless of which
-  dashboard ships first.
-
-## Plan A — Grafana dashboard
+Requires a Prometheus + Grafana stack, which only Tier 3 (k3s) is assumed to have — see
+`docs/DEPLOY-TIERS.md`. Tiers 1/2 don't get this view; they get Plan B (below) plus, if they want
+history beyond "latest report per device," the `sqlite` telemetry backend (see the pointer at the
+end of this section).
 
 Scope: a dashboard JSON checked into the repo (e.g. `backend/deploy/k3s/grafana-dashboard.json`
 or a `dashboards/` ConfigMap, matching however `kube-prometheus-stack` auto-discovers dashboards
@@ -62,7 +55,7 @@ without per-room edits):
   the nonlinear LiPo caveat already documented in `alerts.yaml`)
 - **Availability** — `md_last_seen_seconds`, colored (green < 15m, amber < 1h, red > 1h — matches
   the existing `DisplayStale` alert threshold of 3600s so the dashboard and the alert agree)
-- **Last screen refresh** — `md_last_render_seconds` (new, see above)
+- **Last screen refresh** — `md_last_render_seconds` (shipped — see "Where things live" above)
 - **Signal** — `md_wifi_rssi_dbm`
 - **Firmware** — `md_boot_count` as a reboot-loop smell test (a device rebooting far more often
   than its wake cadence implies is crashing, not sleeping)
@@ -71,21 +64,26 @@ without per-room edits):
   on-call doesn't have to scan every row
 
 Work items (planning-level, no code yet):
-1. Backend: add `md_last_render_seconds` (prerequisite above).
-2. Author the dashboard JSON (can be done in the Grafana UI, then exported — doesn't require
-   touching backend code at all beyond #1).
-3. Decide provisioning mechanism: commit the JSON + a `ConfigMap` manifest (`*.yaml.example`,
+1. Author the dashboard JSON (can be done in the Grafana UI, then exported — no backend code
+   changes needed; every metric it references already ships).
+2. Decide provisioning mechanism: commit the JSON + a `ConfigMap` manifest (`*.yaml.example`,
    consistent with every other manifest in `backend/deploy/k3s/`) vs. leaving it as a manual
-   import step documented in `docs/DEPLOY.md` (private repo). Recommend committing it — same
-   reasoning as everything else in `deploy/k3s/`: reproducible, not a manual click-through.
+   import step documented alongside your own cluster's private deploy notes. Recommend committing
+   it — same reasoning as everything else in `deploy/k3s/`: reproducible, not a manual click-through.
 
-## Plan B — Broker status page
+If you want history beyond what Prometheus's own retention window keeps (or you're evaluating
+whether to stand up Grafana at all), see the `sqlite` telemetry backend
+(`telemetry.backend: "sqlite"`, `docs/DEPLOY-TIERS.md`) — it's the Tier 1/2 answer to the same
+"what does the battery curve look like over weeks" question this dashboard answers for Tier 3.
+
+## Plan B — Broker status page (the zero-dependency default)
 
 Scope: a new read-only endpoint on the existing broker binary (public repo — this is generic,
-not company-specific, so it belongs upstream like everything else in `backend/`).
+not company-specific, so it belongs upstream like everything else in `backend/`). Works on all
+three deploy tiers identically — nothing here is k3s-specific.
 
 - `GET /api/v1/status` — JSON array, one object per configured room: `device_id`, `name`,
-  `battery_pct`, `last_seen_seconds`, `last_render_seconds` (once the prerequisite lands),
+  `battery_pct`, `last_seen_seconds`, `last_render_seconds`,
   `rssi`, `firmware_version`, `boot_count`, and a derived `status: "ok" | "stale" | "low_battery"`
   enum so a simple UI doesn't need to reimplement the threshold logic that already lives in
   `alerts.yaml`/`notify.Manager` (worth factoring those thresholds into one shared place both the
@@ -97,28 +95,30 @@ not company-specific, so it belongs upstream like everything else in `backend/`)
   storage, no database.
 
 Work items (planning-level, no code yet):
-1. Backend: add `md_last_render_seconds` (shared prerequisite with Plan A).
-2. Factor alert thresholds (battery %, staleness) out of `notify.Manager` into something both it
+1. Factor alert thresholds (battery %, staleness) out of `notify.Manager` into something both it
    and the new status handler can reference, to avoid two sources of truth for "what counts as
    low battery."
-3. New `internal/status` package (or a couple of handlers in `internal/server`) exposing the JSON
+2. New `internal/status` package (or a couple of handlers in `internal/server`) exposing the JSON
    endpoint; a small HTML template for the human-readable view.
-4. Auth model: none — cluster-internal-only (decided, see Decisions).
+3. Auth model: none — cluster-internal-only (decided, see Decisions).
 
 ## Decisions
 
-1. **Status-page auth: cluster-internal-only, unauthenticated.** Same trust boundary as `/metrics`
-   today — no Basic Auth, no token. The endpoint must not be exposed on the public ingress
-   (`backend/deploy/k3s/broker.yaml.example`'s `Ingress` resource only fronts `/api/v1/display`
-   and `/api/v1/telemetry` today for device traffic — `/status` and `/api/v1/status` should
-   likewise never be added to that `Ingress`; reachable only via `kubectl port-forward` / a
-   cluster-internal `Service`, same as how `/metrics` is scraped in-cluster by Prometheus and
-   never exposed externally).
-2. **Grafana/Prometheus: assumed present (or in progress) on the same k3s cluster the displays
-   already run on.** No separate stand-up work scoped here — this plan takes kube-prometheus-stack
-   (or equivalent) as a given, matching what `backend/deploy/k3s/alerts.yaml` already assumes
-   (`PrometheusRule`/`AlertmanagerConfig` CRDs). If it later turns out the stack isn't actually
-   there yet when implementation starts, that's a prerequisite to flag at that time, not now.
+1. **Status-page auth: cluster/host-internal-only, unauthenticated.** Same trust boundary as
+   `/metrics` everywhere — no Basic Auth, no token. On Tier 3, the endpoint must not be exposed on
+   the public ingress (`backend/deploy/k3s/broker.yaml.example`'s `Ingress` resource only fronts
+   `/api/v1/display` and `/api/v1/telemetry` today for device traffic — `/status` and
+   `/api/v1/status` should likewise never be added to that `Ingress`; reachable only via `kubectl
+   port-forward` / a cluster-internal `Service`, same as how `/metrics` is scraped in-cluster by
+   Prometheus and never exposed externally). On Tiers 1/2 the equivalent rule is the same one the
+   Tier 1/2 reverse-proxy configs (`backend/deploy/systemd/README.md`,
+   `backend/deploy/compose/Caddyfile.example`) already encode: never add these paths to the
+   proxy's routes — reach them via `curl localhost:8080/...` on the host instead.
+2. **Grafana/Prometheus: assumed present (or in progress) on Tier 3 (k3s) only** — see
+   `docs/DEPLOY-TIERS.md`. No separate stand-up work scoped here — this plan takes
+   kube-prometheus-stack (or equivalent) as a given, matching what `backend/deploy/k3s/alerts.yaml`
+   already assumes (`PrometheusRule`/`AlertmanagerConfig` CRDs). Tiers 1/2 are not expected to stand
+   this up; they get Plan B plus, optionally, the `sqlite` telemetry backend for history.
 3. **Public/private split: dashboard JSON, panel layout, and the broker's `/status` + `/api/v1/status`
    handler code all belong in the public repo** — none of it is company-specific, same reasoning as
    every other file in `backend/`. Only real datasource UIDs, Grafana instance URLs, and the actual
@@ -129,12 +129,12 @@ Work items (planning-level, no code yet):
 
 ## Suggested order
 
-1. Ship the `md_last_render_seconds` prerequisite (small, unblocks both, useful on its own even
-   before either dashboard exists).
-2. Grafana dashboard next, since the stack is assumed present on the same cluster — lowest
-   incremental effort (panels only, no new backend surface beyond the prerequisite).
-3. Broker status page after, scoped strictly cluster-internal per the auth decision above (no
-   ingress exposure, no new auth code needed).
-4. Both coexist long-term; they serve different audiences (engineering/on-call vs. facilities, if
-   facilities are ever granted cluster access — otherwise the status page's real audience today is
-   still "someone with `kubectl` access," same as `/metrics`).
+1. Broker status page (Plan B) first — it's the zero-dependency default, works identically on all
+   three tiers, and needs nothing this doc hasn't already shipped (`md_last_render_seconds`
+   included).
+2. Grafana dashboard (Plan A) next, for Tier 3 deployments that already have the stack — lowest
+   incremental effort (panels only, every metric it needs already ships).
+3. Both coexist long-term; they serve different audiences (engineering/on-call vs. facilities) and,
+   on Tiers 1/2, Plan B is the *only* fleet-health view — there is no Plan A equivalent without
+   standing up Kubernetes + Prometheus + Grafana, which is exactly the infrastructure
+   `docs/DEPLOY-TIERS.md` says most fleets shouldn't need.

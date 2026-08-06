@@ -1,4 +1,7 @@
 # Secrets & your own deployment specifics — never commit
+# HANDOFF.md is a local ops scratchpad (registry addresses, image tags, kubectl rollout notes) —
+# this repo is public, so it must never land in a commit; see docs/SECURITY.md.
+HANDOFF.md
 provisioning/
 *-tokens.txt
 google-sa.json
@@ -22,6 +25,7 @@ backend/preview-*.png
 firmware/build/
 firmware/sdkconfig
 firmware/sdkconfig.old
+firmware/sdkconfig.defaults.local
 
 # Python bytecode
 __pycache__/

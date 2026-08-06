@@ -1,4 +1,5 @@
 # Broker configuration. In k3s this is mounted from a ConfigMap; secrets come from env / Secret.
+# On Tiers 1/2 (no Kubernetes — see docs/DEPLOY-TIERS.md) it's just a file on disk.
 listen: ":8080"
 
 # How often the poller refreshes each room from the calendar provider.
@@ -49,6 +50,54 @@ firmware:
   version: ""                                  # e.g. "1.1.0"
   url: ""                                      # e.g. "https://displays.example.internal/firmware/meeting_display-1.1.0.bin"
   dir: ""                                      # e.g. "/etc/meeting-displays/firmware" to serve images locally
+
+# Settings shared by every display, set once here instead of per device. Required by the /admin
+# "Add a device" wizard, which bakes these into each unit's NVS at flash time — a single fleet-wide
+# value, so a stale SSID can't be hand-typed into one device and not the others. The PSK is a
+# secret: keep it as a ${VAR} reference (see webhook_url above) and inject the real value from your
+# Secret / .env, never inline. It is never served to a browser — the broker builds the NVS image
+# itself (internal/nvs) and hands back only opaque partition bytes.
+fleet:
+  wifi_ssid: ""                                # e.g. "Corp_IoT"; the network every display joins
+  wifi_psk: "${MD_WIFI_PSK}"                   # WPA2 pre-shared key; leave both empty to disable the wizard
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Both blocks below are OPTIONAL. Omitting them entirely reproduces today's behavior exactly:
+# telemetry in memory only (wiped on restart), and config writes going to the in-cluster
+# ConfigMap when running in k3s and nowhere otherwise. See docs/DEPLOY-TIERS.md for the tiers
+# these knobs exist for, and docs/DASHBOARD.md for what the telemetry backends unlock.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# telemetry:
+#   # "memory"     — default. Latest report per device, in RAM, wiped on restart. Zero files.
+#   # "sqlite"     — also append every report to a local SQLite file (pure-Go driver, no cgo), so
+#   #                the battery curve and refresh counts survive restarts. Recommended for
+#   #                Tiers 1/2 (no Prometheus/Grafana) — see docs/DEPLOY-TIERS.md.
+#   # "prometheus" — identical to "memory" in the broker. Declares that history lives in your
+#   #                Prometheus, scraped from /metrics (this is Tier 3's default). The broker
+#   #                never pushes anywhere — see docs/DASHBOARD.md.
+#   backend: "memory"
+#   sqlite:
+#     path: "/var/lib/meeting-displays/telemetry.db"
+#     retention_days: 90        # 0 = keep forever (unbounded growth; not recommended)
+#     prune_interval: "6h"
+#     queue_size: 256           # in-flight writes buffered off the device POST path
+
+# config_persistence:
+#   # Where live /admin and /manager edits are written so they survive a restart.
+#   # "auto"      — default. In-cluster -> "configmap"; else "file" if the target is writable;
+#   #               else "none" (logged at ERROR). -demo forces "none" (see config.demo.yaml).
+#   # "file"      — atomic temp-file + rename into file.path (default: the -config path). This is
+#   #               what Tiers 1/2 auto-resolve to — see docs/DEPLOY-TIERS.md.
+#   # "configmap" — JSON merge-patch of the in-cluster ConfigMap (today's Tier 3 behavior).
+#   # "none"      — read-only/ephemeral. Writes apply in memory; the UI says so on every page.
+#   mode: "auto"
+#   file:
+#     path: ""                  # empty = write back to the file given by -config
+#   configmap:
+#     namespace: "meeting-displays"
+#     name: "broker-config"
+#     key: "config.yaml"
 
 # One entry per physical display. device_id is what the firmware sends in the URL.
 # room is the calendar resource (room mailbox / Google resource email).

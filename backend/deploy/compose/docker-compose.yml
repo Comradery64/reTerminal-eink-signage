@@ -1,0 +1,102 @@
+# Tier 2: container / compose deploy. See ../../../docs/DEPLOY-TIERS.md for how this compares to
+# Tier 1 (systemd) and Tier 3 (k3s), and ../../../docs/GOOGLE-AUTH.md for the `google` profile.
+#
+# Usage:
+#   cp .env.example .env && $EDITOR .env
+#   mkdir -p config && cp ../../config.tier1.example.yaml config/config.yaml && $EDITOR config/config.yaml
+#   sudo chown -R 65532:65532 config            # see "Volume ownership" below — the bind mount is
+#                                                # created owned by you, not the container's uid
+#   docker compose up -d                       # broker only
+#   docker compose --profile tls up -d          # + Caddy in front for device TLS
+#   docker compose --profile google up -d       # + wiftoken sidecar for keyless Calendar auth
+#
+# Two honest caveats, not bugs:
+#   1. No in-container HEALTHCHECK: the image is distroless (no shell, no curl/wget to run one
+#      from inside the container). Probe from the host instead: `curl http://localhost:8080/healthz`.
+#   2. Both `./config` (bind mount) and the named volume `broker-data` must be writable by uid 65532
+#      (distroless "nonroot"). `./config` is created by `mkdir -p` above and owned by whoever ran
+#      it, not 65532 — `config_persistence.mode: file` (config.tier1.example.yaml) never falls back,
+#      so an unwritable `./config` makes the broker exit non-zero at startup, not fail quietly at
+#      the first admin save. Run the `chown` above once, before the first `docker compose up -d`.
+#      `broker-data` doesn't need this: the Dockerfile seeds it via `COPY --chown=nonroot:nonroot`,
+#      and Docker copies a brand-new named volume's initial contents (including ownership) from
+#      whatever the image already had at that mount point — but only the FIRST time the volume is
+#      created. If you're reusing a `broker-data` volume created by an older image build, fix
+#      ownership once with the `fixperms` one-off service below: `docker compose run --rm
+#      fixperms` (the broker image itself is distroless — no shell, no chown — so this borrows a
+#      plain coreutils image instead, sharing the volume by its compose-local name).
+services:
+  broker:
+    image: ghcr.io/comradery64/meeting-displays-broker:latest   # REPLACE with your own registry/tag
+    user: "65532:65532"        # distroless nonroot UID:GID, explicit (not relying on the image default)
+    env_file: .env
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      # rw: the file config_persistence backend (auto-detected here — no in-cluster API inside a
+      # container either) needs to write config.yaml back after an /admin or /manager save.
+      - ./config:/etc/meeting-displays
+      - broker-data:/var/lib/meeting-displays
+      # Only present when the `google` profile sidecar below is also running; harmless bind of an
+      # empty dir otherwise. credentials_file in config.yaml must point inside this mount.
+      - gcp-token:/var/run/gcp
+
+  # Reverse proxy for device TLS. Same non-goal as the Tier 1 Caddyfile: only device-facing paths
+  # plus the authenticated /admin and /manager UIs are proxied; /metrics, /status, and
+  # /api/v1/status stay host-only (never add them to Caddyfile.example) — same trust boundary
+  # docs/DASHBOARD.md defines for the k3s Ingress.
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["tls"]
+    restart: unless-stopped
+    ports:
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - broker
+
+  # Keyless Google Calendar auth without a kubelet — see ../../../docs/GOOGLE-AUTH.md. Long-running
+  # (not a one-shot, unlike Tier 1's wiftoken.service+.timer pair) because compose has no built-in
+  # timer primitive; -interval makes the same binary loop instead.
+  wiftoken:
+    image: ghcr.io/comradery64/meeting-displays-broker:latest   # same image; built with /wiftoken too
+    entrypoint: ["/wiftoken"]
+    command:
+      - "-key=/etc/meeting-displays/gcp/wiftoken.key"
+      - "-out=/var/run/gcp/token"
+      - "-iss=${WIFTOKEN_ISSUER}"
+      - "-sub=broker"
+      - "-aud=${WIFTOKEN_AUDIENCE}"
+      - "-ttl=1h"
+      - "-interval=30m"
+    profiles: ["google"]
+    user: "65532:65532"
+    restart: unless-stopped
+    volumes:
+      - ./config:/etc/meeting-displays:ro   # wiftoken.key lives at ./config/gcp/wiftoken.key
+      - gcp-token:/var/run/gcp
+
+  # One-off repair tool for "Volume ownership" caveat #2 above — never started by `docker compose
+  # up`, only via `docker compose run --rm fixperms`. Not the broker image: distroless has no
+  # chown/shell to run this from inside a `--user root` broker container, which is why the old
+  # recipe here (`docker compose run --rm --user root broker chown ...`) never actually worked.
+  # alpine has coreutils and mounts the exact same named volume compose already tracks, so this
+  # doesn't need the project-prefixed volume name a raw `docker run -v` would require.
+  fixperms:
+    image: alpine:3
+    profiles: ["fixperms"]
+    user: root
+    volumes:
+      - broker-data:/var/lib/meeting-displays
+    entrypoint: ["chown", "-R", "65532:65532", "/var/lib/meeting-displays"]
+
+volumes:
+  broker-data:
+  gcp-token:
+  caddy-data:
+  caddy-config:

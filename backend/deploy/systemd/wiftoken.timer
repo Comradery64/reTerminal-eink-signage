@@ -1,0 +1,13 @@
+[Unit]
+Description=Re-mint the on-prem OIDC token for keyless Google Calendar WIF auth every 30 minutes
+
+[Timer]
+# 30 min against a 1h token TTL (see wiftoken.service's -ttl) gives a full extra mint's worth of
+# headroom before the previous token would expire, so a single missed/delayed run (host under
+# load, systemd restart) doesn't leave the broker mid-refresh on an expired credential.
+OnBootSec=1min
+OnUnitActiveSec=30min
+Unit=wiftoken.service
+
+[Install]
+WantedBy=timers.target

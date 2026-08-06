@@ -179,6 +179,9 @@ button.danger:hover { background: var(--red); color: var(--paper); }
 }
 .banner-error { border: 1px solid var(--red); color: var(--red); }
 .banner-ok { border: 1px solid var(--green); color: var(--green); }
+/* Persistence strip's "none" state (see internal/server/configwrite.go persistStrip) — amber, not
+   red: an operator who deliberately chose ephemeral config is not in an error state. */
+.banner-warn { border: 1px solid var(--amber); color: var(--amber); }
 @media (prefers-reduced-motion: no-preference) {
   .flash { animation: eink-flash .6s steps(1, jump-none) 2; }
 }

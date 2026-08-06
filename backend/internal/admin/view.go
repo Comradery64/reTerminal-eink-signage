@@ -10,9 +10,12 @@ import "github.com/Comradery64/reTerminal-eink-signage/backend/internal/config"
 // admin edits exactly what's stored — WakeMode == "" means "no override, uses fleet default".
 // TokenConfigured never exposes the token hash itself, only whether one is set.
 type RoomView struct {
-	DeviceID            string
-	Name                string
-	Room                string
+	DeviceID string
+	Name     string
+	Room     string
+	// Label is the panel's position within its room, set only where a room has several displays
+	// (config.Room.Label). Empty otherwise, so the rooms table stays unchanged for the common case.
+	Label               string
 	WakeMode            string
 	FlatIntervalSeconds uint32
 	TokenConfigured     bool
@@ -43,6 +46,7 @@ func Build(cfg *config.Config) View {
 			DeviceID:        r.DeviceID,
 			Name:            r.Name,
 			Room:            r.Room,
+			Label:           r.Label,
 			TokenConfigured: r.TokenSHA256 != "",
 		}
 		if r.WakeMode != nil {

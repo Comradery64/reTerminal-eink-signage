@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -121,7 +122,9 @@ func TestAdminEditRoomPreservesTokenAndWakeOverrideWhenFieldsLeftBlank(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.applyConfig(withOverride, true)
+	if err := s.applyConfig(context.Background(), withOverride, true); err != nil {
+		t.Fatalf("applyConfig: %v", err)
+	}
 	originalTokenHash := withOverride.Rooms[0].TokenSHA256
 
 	client := loggedInAdminClient(t, srv)
@@ -523,5 +526,115 @@ func TestAdminCannotRevokeOwnAccountEvenWithAnotherAdminPresent(t *testing.T) {
 	}
 	if _, ok := s.cfg.Load().UserByUsername(testAdminUsername); ok {
 		t.Fatal("a different admin must still be able to revoke another account")
+	}
+}
+
+// saveRoom posts the admin rooms form and returns the redirect response.
+func saveRoom(t *testing.T, client *http.Client, base string, form url.Values) *http.Response {
+	t.Helper()
+	resp, err := client.PostForm(base+"/admin/rooms/save", form)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+// The provisioning wizard sends only a hash — the plaintext token goes straight from the broker
+// into the device's flash over USB and must never come back over the network.
+func TestAdminSaveRoomAcceptsTokenSHA256(t *testing.T) {
+	s := testServerWithAuth(t)
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+	client := loggedInAdminClient(t, srv)
+
+	hash := strings.Repeat("ab", 32)
+	resp := saveRoom(t, client, srv.URL, url.Values{
+		"device_id": {"rt-new"}, "name": {"Cedar"}, "room": {"cedar@x"}, "token_sha256": {hash},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("want 303, got %d", resp.StatusCode)
+	}
+
+	room, ok := s.cfg.Load().RoomByDeviceID("rt-new")
+	if !ok {
+		t.Fatal("room was not saved")
+	}
+	if room.TokenSHA256 != hash {
+		t.Errorf("stored hash = %q, want the submitted %q", room.TokenSHA256, hash)
+	}
+}
+
+// token_sha256 wins over a plaintext token in the same submission: the wizard's value is the
+// authoritative one, and silently hashing the other field instead would provision a device whose
+// token the broker doesn't know.
+func TestAdminSaveRoomPrefersTokenSHA256OverPlaintext(t *testing.T) {
+	s := testServerWithAuth(t)
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+	client := loggedInAdminClient(t, srv)
+
+	hash := strings.Repeat("cd", 32)
+	saveRoom(t, client, srv.URL, url.Values{
+		"device_id": {"rt-new"}, "name": {"Cedar"}, "room": {"cedar@x"},
+		"token_sha256": {hash}, "token": {"ignored-plaintext"},
+	})
+
+	room, _ := s.cfg.Load().RoomByDeviceID("rt-new")
+	if room.TokenSHA256 != hash {
+		t.Errorf("stored hash = %q, want the token_sha256 value %q", room.TokenSHA256, hash)
+	}
+}
+
+func TestAdminSaveRoomRejectsMalformedTokenSHA256(t *testing.T) {
+	s := testServerWithAuth(t)
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+	client := loggedInAdminClient(t, srv)
+
+	for _, bad := range []string{
+		"tooshort",
+		strings.Repeat("ab", 33), // too long
+		strings.Repeat("AB", 32), // uppercase hex
+		strings.Repeat("zz", 32), // not hex at all
+	} {
+		resp := saveRoom(t, client, srv.URL, url.Values{
+			"device_id": {"rt-bad"}, "name": {"Cedar"}, "room": {"cedar@x"}, "token_sha256": {bad},
+		})
+		if loc := resp.Header.Get("Location"); !strings.Contains(loc, "error=") {
+			t.Errorf("token_sha256 %q: want a redirect carrying an error, got %q", bad, loc)
+		}
+		if _, ok := s.cfg.Load().RoomByDeviceID("rt-bad"); ok {
+			t.Fatalf("token_sha256 %q was accepted; the room must not be saved", bad)
+		}
+	}
+}
+
+// A room's second display is distinguished only by its label, so an unrelated edit that omits the
+// field must not clear it — clearing it would also invalidate the sibling panel's config.
+func TestAdminSaveRoomKeepsLabelWhenOmitted(t *testing.T) {
+	s := testServerWithAuth(t)
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+	client := loggedInAdminClient(t, srv)
+
+	hash := strings.Repeat("ef", 32)
+	saveRoom(t, client, srv.URL, url.Values{
+		"device_id": {"rt-door"}, "name": {"Cedar"}, "room": {"cedar@x"},
+		"label": {"Door"}, "token_sha256": {hash},
+	})
+	if room, _ := s.cfg.Load().RoomByDeviceID("rt-door"); room.Label != "Door" {
+		t.Fatalf("label = %q, want Door", room.Label)
+	}
+
+	// Re-save with only the name changed, exactly as the form does when the operator fixes a typo.
+	saveRoom(t, client, srv.URL, url.Values{
+		"device_id": {"rt-door"}, "name": {"Cedar Room"}, "room": {"cedar@x"},
+	})
+	room, _ := s.cfg.Load().RoomByDeviceID("rt-door")
+	if room.Label != "Door" {
+		t.Errorf("label = %q after an unrelated edit, want it preserved as Door", room.Label)
+	}
+	if room.TokenSHA256 != hash {
+		t.Errorf("token was wiped by an unrelated edit: got %q", room.TokenSHA256)
 	}
 }
