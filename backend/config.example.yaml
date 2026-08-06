@@ -50,6 +50,12 @@ firmware:
   version: ""                                  # e.g. "1.1.0"
   url: ""                                      # e.g. "https://displays.example.internal/firmware/meeting_display-1.1.0.bin"
   dir: ""                                      # e.g. "/etc/meeting-displays/firmware" to serve images locally
+  # The /admin "Add a device" wizard needs bootloader.bin, partition-table.bin, and
+  # meeting_display.bin present in `dir` (copy them there after each `idf.py build`).
+  # web_tools_url is the ESP Web Tools module the OPERATOR'S BROWSER loads — the broker itself
+  # never fetches it. Defaults to the public CDN; on an isolated network, vendor the file into
+  # `dir` and point this at "/firmware/esp-web-tools.js".
+  web_tools_url: ""                            # "" = https://unpkg.com/esp-web-tools@10/dist/web/install-button.js
 
 # Settings shared by every display, set once here instead of per device. Required by the /admin
 # "Add a device" wizard, which bakes these into each unit's NVS at flash time — a single fleet-wide

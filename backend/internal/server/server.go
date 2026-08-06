@@ -35,6 +35,10 @@ type Server struct {
 	// pstate is the standing summary of the persistence backend's health, rendered on every
 	// /admin and /manager page load and served at GET /api/v1/config-persistence.
 	pstate *persistState
+	// provisions holds NVS images minted by the "Add a device" wizard between the mint call and
+	// ESP Web Tools fetching them over WebSerial. In-memory and short-lived by design — each entry
+	// carries a device token and the fleet Wi-Fi PSK (see provision.go).
+	provisions *provisionStore
 
 	// derived caches, recomputed from cfg by refreshDerived on New and on every admin/manager
 	// write (see admin.go/manager.go) — never read cfg's Rooms directly for these, or a write
@@ -51,10 +55,11 @@ type Server struct {
 func New(cfg *config.Live, c *cache.Store, tlm *telemetry.Store, alerts *notify.Manager, persist configstore.Store, log *slog.Logger) *Server {
 	s := &Server{
 		cfg: cfg, cache: c, tlm: tlm, alerts: alerts,
-		sessions: auth.NewSessionStore(sessionTTL),
-		persist:  persist,
-		pstate:   &persistState{},
-		log:      log,
+		sessions:   auth.NewSessionStore(sessionTTL),
+		persist:    persist,
+		pstate:     &persistState{},
+		provisions: newProvisionStore(),
+		log:        log,
 	}
 	s.refreshDerived(cfg.Load())
 	// Seed the strip/API with the resolved backend's identity before any write ever happens, so
@@ -165,7 +170,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/firmware/save", s.requireRole(adminUI, s.handleAdminSaveFirmware))
 	mux.HandleFunc("POST /admin/access/save", s.requireRole(adminUI, s.handleAdminSaveUser))
 	mux.HandleFunc("POST /admin/access/delete", s.requireRole(adminUI, s.handleAdminDeleteUser))
-	mux.HandleFunc("POST /admin/api/provision-nvs", s.requireRole(adminUI, s.handleProvisionNVS))
+	// "Add a device" wizard. All admin-gated: the manifest and the NVS image are fetched by ESP
+	// Web Tools from the operator's own browser, so they ride the same session cookie.
+	mux.HandleFunc("GET /admin/api/provision-preflight", s.requireRole(adminUI, s.handleProvisionPreflight))
+	mux.HandleFunc("POST /admin/api/provision-nvs", s.requireRole(adminUI, s.handleProvisionMint))
+	mux.HandleFunc("GET /admin/provision/{nonce}/manifest.json", s.requireRole(adminUI, s.handleProvisionManifest))
+	mux.HandleFunc("GET /admin/provision/{nonce}/nvs.bin", s.requireRole(adminUI, s.handleProvisionNVSImage))
 	mux.HandleFunc("GET /manager/login", s.handleLoginPage(managerUI))
 	mux.HandleFunc("POST /manager/login", s.handleLoginSubmit(managerUI))
 	mux.HandleFunc("POST /manager/logout", s.handleLogout(managerUI))

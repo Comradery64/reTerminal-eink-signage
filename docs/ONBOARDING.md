@@ -112,40 +112,45 @@ engineer directly; decisions below are made, not left open, except where explici
 ### Architecture
 
 The fleet Wi-Fi PSK is a *shared* secret: unlike a per-device token, one leak compromises every
-device. So it never reaches the browser. The NVS image is built server-side in Go and handed to
-the browser as opaque bytes to write over USB.
+device. So it never becomes a JavaScript value at all. The browser receives a short-lived
+**manifest URL**, and ESP Web Tools fetches the credential-bearing bytes itself, same-origin,
+under the operator's own admin session. Nothing in the page can read them.
 
 ```
 Browser (/admin → "Add a device")
   │
-  ├─ 1. Fetch pre-built firmware + manifest from THIS broker: GET /firmware/manifest.json
-  │     (ESP Web Tools manifest — points at bootloader.bin/partition-table.bin/meeting_display.bin,
-  │     served by the existing `firmware.dir` static handler, server.go:189
-  │     `mux.Handle("GET /firmware/", ...)`. Nothing new to build here except generating the
-  │     manifest and dropping the 3 .bin files in that dir as part of the release process.)
+  ├─ 1. GET /admin/api/provision-preflight → {ready, issues[]}. Reports a missing fleet PSK or
+  │     absent .bin files up front, so a misconfiguration is explained before someone is standing
+  │     at a device with a USB cable. The wizard form stays hidden until ready.
   │
-  ├─ 2. User picks target serial port (WebSerial permission prompt) → ESP Web Tools flashes the
-  │     app image, ERASING FIRST (see below). No CA cert / broker host prompt needed — those are
-  │     baked into the one shared .bin at build time, same as today.
+  ├─ 2. Operator fills in device_id / room name / calendar address / optional panel label,
+  │     presses "Prepare this device".
   │
-  ├─ 3. Wizard POSTs {device_id} to /admin/api/provision-nvs (new, admin-role-only). The server
-  │     generates a 256-bit token, builds the NVS partition image (device_id/token/wifi_ssid/
-  │     wifi_psk under the `prov` namespace) in Go, and responds with:
-  │       - the raw 0x6000-byte partition image (base64), and
-  │       - the token's SHA-256 hex.
-  │     The plaintext token exists only in that one response body and in the device's flash; the
-  │     PSK never leaves the pod. Neither is ever logged.
+  ├─ 3. POST /admin/api/provision-nvs {device_id} → {manifest_url, token_sha256, expires_in}.
+  │     The server mints a 256-bit token, builds the NVS image (device_id/token/wifi_ssid/
+  │     wifi_psk under the `prov` namespace) in Go, and parks it in memory behind an unguessable
+  │     nonce with a 15-minute TTL. The response carries NO plaintext token and NO PSK.
   │
-  ├─ 4. Wizard writes the returned image over WebSerial at offset 0x9000 (partitions.csv —
-  │     unchanged).
+  ├─ 4. Wizard POSTs the room to the EXISTING /admin/rooms/save with `token_sha256` — BEFORE
+  │     flashing. The token already exists at this point, so a browser that dies mid-flash leaves
+  │     a device that can simply be reflashed; saving afterwards would instead strand a unit
+  │     holding a token nobody has.
   │
-  └─ 5. Wizard POSTs to the EXISTING /admin/rooms/save endpoint with a NEW optional
-        `token_sha256` field (see below), so no plaintext token is ever sent back to the server.
+  └─ 5. Operator presses Flash. <esp-web-install-button manifest="/admin/provision/<nonce>/
+        manifest.json"> prompts for the serial port and writes all four parts in ascending offset:
+        bootloader 0x0, partition-table 0x8000, nvs 0x9000, app (ota_0) 0x20000. The NVS part
+        resolves to /admin/provision/<nonce>/nvs.bin — admin-gated, no-store, TTL-bounded.
 ```
 
-**Erase before flash.** A re-flashed unit keeps its old `otadata`, which may point at `ota_1`,
-so writing only `ota_0` leaves it booting the previous image. The wizard must use ESP Web Tools'
-full-erase install path (or explicitly erase `otadata` at 0x10000) rather than a bare app write.
+**Erase before flash.** The manifest sets `new_install_prompt_erase: true`. A re-flashed unit
+keeps its old `otadata`, which may point at `ota_1`, so writing only `ota_0` would leave it
+booting the previous image.
+
+**ESP Web Tools itself** is loaded from `firmware.web_tools_url` (default: the pinned unpkg CDN
+build). That fetch is made by the *operator's browser*, not the broker — on an isolated network,
+vendor the module into `firmware.dir` and point the config at `/firmware/esp-web-tools.js`.
+WebSerial is Chrome/Edge only and requires a secure context, which the TLS ingress already
+provides.
 
 ### New/changed server-side pieces
 
@@ -160,11 +165,19 @@ full-erase install path (or explicitly erase `otadata` at 0x10000) rather than a
    - This directly fixes the class of bug hit this session (wrong SSID hand-typed per device from
      a stale 1Password item) by making Wi-Fi creds a single fleet-wide value set once.
 
-2. **`POST /admin/api/provision-nvs`** (new, admin-role-only, same auth middleware as the rest of
-   `/admin`). Request `{"device_id": "..."}`; response
-   `{"nvs_b64": "...", "token_sha256": "<64 hex>"}`. Generates a 256-bit token
-   (`crypto/rand`, base64url, no truncation), builds the NVS image (below), and returns both.
-   Never logs the token or the PSK; sets `Cache-Control: no-store`.
+2. **Four new admin-gated endpoints** (`provision.go`), all behind the same middleware as the rest
+   of `/admin`:
+   - `GET /admin/api/provision-preflight` → `{ready, issues[]}`. Cheap, side-effect-free.
+   - `POST /admin/api/provision-nvs` `{device_id}` → `{manifest_url, token_sha256, expires_in_seconds}`.
+     Mints a 256-bit token (`crypto/rand`, base64url, no truncation), builds the NVS image, and
+     stores it under an unguessable nonce for 15 minutes. Refuses with 412 when fleet Wi-Fi is
+     unset or the `.bin` files are missing.
+   - `GET /admin/provision/{nonce}/manifest.json` → the per-device ESP Web Tools manifest.
+   - `GET /admin/provision/{nonce}/nvs.bin` → the raw partition bytes.
+
+   The artifact lives in memory only, never on disk; the token and PSK are never logged; both
+   credential-bearing responses set `Cache-Control: no-store`. Expiry is swept on each mint, so
+   there's no background goroutine and the map holds only the last TTL window's mints.
 
 3. **`/admin/rooms/save` gets one new optional form field: `token_sha256`.** In
    `handleAdminSaveRoom`, the new branch goes *first* in the existing precedence chain
@@ -177,28 +190,16 @@ full-erase install path (or explicitly erase `otadata` at 0x10000) rather than a
    validation. Keeps the manual/curl/CLI path working unchanged while letting the wizard send only
    a hash.
 
-4. **`/firmware/manifest.json`** — **generated**, not hand-written, and written into whatever
-   directory `firmware.dir` points at. Standard ESP Web Tools format:
-   ```json
-   {
-     "name": "Meeting Display",
-     "version": "1.0.0",
-     "builds": [{
-       "chipFamily": "ESP32-S3",
-       "parts": [
-         {"path": "bootloader.bin", "offset": 0},
-         {"path": "partition-table.bin", "offset": 32768},
-         {"path": "meeting_display.bin", "offset": 131072}
-       ]
-     }]
-   }
-   ```
-   Offsets are verified against `firmware/partitions.csv`: `0x8000`=32768 partition table,
-   `0x20000`=131072 = `ota_0`; bootloader at 0 is correct for the ESP32-S3.
-   `version` **must** come from `FIRMWARE_VERSION` in `firmware/main/config.hpp:69` (currently
-   `1.0.0`), not be typed by hand — otherwise it drifts from both the firmware and
-   `firmware.version` in the ConfigMap. Generate it in the same release step that copies the 3
-   `.bin`s into `firmware.dir` and updates `firmware.version`/`firmware.url` for OTA.
+4. **The manifest is served, not stored.** Rather than generating a static
+   `/firmware/manifest.json` at release time (the original plan — which would have drifted from
+   `firmware.version` the first time someone forgot to regenerate it), the broker builds it per
+   request from live config. `version` comes from `firmware.version`; the four part offsets are
+   Go constants checked against `firmware/partitions.csv` by
+   `TestProvisionManifestMatchesPartitionLayout`, which also asserts they ascend.
+
+   Release process is therefore unchanged except for one step: copy `bootloader.bin`,
+   `partition-table.bin`, and `meeting_display.bin` into `firmware.dir` after each
+   `idf.py build`. The preflight endpoint checks all three exist and names the missing one.
 
 ### NVS image builder, in Go (the one genuinely hard part)
 
@@ -233,16 +234,22 @@ Go binary. Bounding the scope deliberately:
    `nvs_partition_gen.py` (ESP-IDF 5.5). Parity confirmed on the real four-key provisioning image
    and at every entry-packing boundary (value lengths 1/31/32/33/63/64/200); fixtures live in
    `internal/nvs/testdata/`.
-4. ✅ `POST /admin/api/provision-nvs` wiring 1 + 3 together.
-5. ⬜ Generated `manifest.json` + confirm ESP Web Tools' `<esp-web-install-button>` flashes the 3
-   existing `.bin`s correctly against one bench unit (reuse the exact bytes already used for
-   every manual flash this session — no firmware code changes needed for this phase).
-6. ⬜ Wire the wizard UI in `/admin` (new "Add a device" section, reusing the existing Rooms-form
-   styling) and do one real end-to-end bench test against a blank unit before calling this done.
+4. ✅ The provisioning endpoints (mint / preflight / manifest / nvs.bin) wiring 1 + 3 together.
+5. ✅ Per-device manifest served from live config, with the flash layout asserted against
+   `partitions.csv` in a test.
+6. ✅ The "Add a device" wizard in `/admin` — preflight gate, form, mint, room save, then
+   `<esp-web-install-button>`.
+7. ⬜ **One real end-to-end bench flash against a blank unit.** Not done, and nothing above
+   substitutes for it.
 
-Steps 5–6 are browser-side and need a bench unit plus a Chrome/Edge WebSerial session, so they
-can't be finished or honestly verified from a terminal. Everything the wizard calls exists and is
-tested; what's left is the page that calls it.
+**What "done" does and doesn't mean here.** Everything server-side is covered by tests: the NVS
+bytes are byte-identical to ESP-IDF's own generator, the manifest's offsets are asserted against
+`partitions.csv`, the mint response is asserted to contain no credential, and the rendered admin
+page is checked for well-formed HTML and valid JS. None of that exercises WebSerial. The parts
+that can only fail on real hardware — whether ESP Web Tools drives *this* board's USB-serial
+bridge, whether the erase-then-write sequence leaves a bootable unit, whether the firmware reads
+back the NVS entries it expects — are unverified until someone plugs a display in. Treat step 7
+as required, not ceremonial.
 
 ## Multiple displays per one room
 

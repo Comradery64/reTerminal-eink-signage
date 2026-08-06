@@ -124,6 +124,13 @@ type FirmwareConfig struct {
 	Version string `yaml:"version"` // target build, e.g. "1.1.0"; empty disables OTA advertising
 	URL     string `yaml:"url"`     // HTTPS URL of the signed .bin (may point at this broker's /firmware/)
 	Dir     string `yaml:"dir"`     // optional: serve image files from this dir at /firmware/
+
+	// WebToolsURL is the ESP Web Tools module the /admin "Add a device" wizard loads to flash a
+	// unit over WebSerial. Defaults to the public CDN build, which requires the *operator's
+	// browser* (not the broker) to reach the internet. On an isolated network, vendor the file
+	// into firmware.dir and point this at "/firmware/esp-web-tools.js" instead — the wizard
+	// doesn't care where the module comes from.
+	WebToolsURL string `yaml:"web_tools_url"`
 }
 
 // FleetConfig holds settings shared by every display, set once instead of per device. Today that
@@ -334,6 +341,11 @@ func (c *Config) applyDefaults() {
 	}
 	if c.ConfigPersistence.Mode == "" {
 		c.ConfigPersistence.Mode = "auto"
+	}
+	// Pinned to a major version rather than "latest": an unattended upgrade of a third-party
+	// module that drives a flash tool is not something to discover mid-provisioning.
+	if c.Firmware.WebToolsURL == "" {
+		c.Firmware.WebToolsURL = "https://unpkg.com/esp-web-tools@10/dist/web/install-button.js"
 	}
 	// These three match today's hardcoded constants in internal/server/configwrite.go exactly, so
 	// an existing config.yaml that never mentions config_persistence behaves identically.
