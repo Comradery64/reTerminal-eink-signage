@@ -588,3 +588,66 @@ func TestValidateMultipleDisplaysPerRoom(t *testing.T) {
 		})
 	}
 }
+
+// TestMarshalForPersistRestoresFleetWifiPSK covers the exact path /admin's "Save fleet Wi-Fi"
+// button takes. WithFleetWifiSSID edits the same Fleet struct that holds the PSK, so if clone()
+// ever stopped carrying envRefs forward, the first SSID save would write the expanded fleet-wide
+// Wi-Fi password straight into the ConfigMap — reintroducing precisely the leak that keeping the
+// PSK server-side exists to prevent.
+func TestMarshalForPersistRestoresFleetWifiPSK(t *testing.T) {
+	const pskEnvVar = "TEST_FLEET_PSK_FOR_MARSHAL_ROUNDTRIP"
+	psk := strings.Repeat("wifi-pw-", 4) // well over the 8-byte floor, never printed
+	t.Setenv(pskEnvVar, psk)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	yamlContent := `
+provider: demo
+rooms:
+  - device_id: rt-1
+    room: a@x
+    token_sha256: ` + hashOf64("t") + `
+wake:
+  timezone: UTC
+fleet:
+  wifi_ssid: "Old_SSID"
+  wifi_psk: "${` + pskEnvVar + `}"
+`
+	if err := os.WriteFile(path, []byte(yamlContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Fleet.WifiPSK != psk {
+		t.Fatal("the expanded PSK must be usable in memory, or the wizard can't build an NVS image")
+	}
+
+	updated, err := c.WithFleetWifiSSID("New_SSID")
+	if err != nil {
+		t.Fatalf("WithFleetWifiSSID: %v", err)
+	}
+	if updated.Fleet.WifiSSID != "New_SSID" {
+		t.Fatalf("SSID not applied: %q", updated.Fleet.WifiSSID)
+	}
+	if updated.Fleet.WifiPSK != psk {
+		t.Fatal("editing the SSID must not disturb the PSK")
+	}
+
+	out, err := updated.MarshalForPersist()
+	if err != nil {
+		t.Fatalf("MarshalForPersist: %v", err)
+	}
+	outStr := string(out)
+	if strings.Contains(outStr, psk) {
+		t.Fatal("MarshalForPersist must never write the expanded fleet Wi-Fi PSK out")
+	}
+	if !strings.Contains(outStr, "${"+pskEnvVar+"}") {
+		t.Fatal("MarshalForPersist must restore the ${VAR} token for the fleet PSK")
+	}
+	if !strings.Contains(outStr, "New_SSID") {
+		t.Fatal("the SSID is not a secret and must persist as a literal")
+	}
+}
