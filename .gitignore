@@ -2,6 +2,9 @@
 # HANDOFF.md is a local ops scratchpad (registry addresses, image tags, kubectl rollout notes) —
 # this repo is public, so it must never land in a commit; see docs/SECURITY.md.
 HANDOFF.md
+# Cross-session coordination scratchpad (two Claude sessions working this repo
+# concurrently). Local-only: may reference registry IPs, image tags, cluster state.
+.coord/
 provisioning/
 *-tokens.txt
 google-sa.json
@@ -33,3 +36,4 @@ __pycache__/
 
 # OS cruft
 .DS_Store
+COORDINATION.md
