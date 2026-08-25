@@ -34,7 +34,10 @@ alerts:
   low_battery_pct: 45
   clear_pct: 55
   min_renotify: "24h"
-  webhook_url: "${ALERT_WEBHOOK_URL}"   # set in /etc/meeting-displays/broker.env — see broker.env.example
+  # Empty = log alerts instead of pushing them. To enable Slack, set ALERT_WEBHOOK_URL in
+  # /etc/meeting-displays/broker.env AND change this to "${ALERT_WEBHOOK_URL}". A ${VAR} whose
+  # variable is unset or empty is a startup error, so don't reference it until you've set it.
+  webhook_url: ""
   stale_after: "1h"
 
 firmware:
@@ -47,7 +50,9 @@ firmware:
 # set MD_WIFI_PSK in /etc/meeting-displays/broker.env, never inline here.
 fleet:
   wifi_ssid: ""
-  wifi_psk: "${MD_WIFI_PSK}"
+  # Leave empty to disable the /admin "Add a device" wizard. To enable it, set MD_WIFI_PSK in
+  # broker.env AND change this to "${MD_WIFI_PSK}" — see the note on webhook_url above.
+  wifi_psk: ""
 
 # Tier 1 has no Prometheus/Grafana by default — sqlite is recommended so the battery curve and
 # refresh counts survive a restart (systemd StateDirectory gives this path correct ownership; see

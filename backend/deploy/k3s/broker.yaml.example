@@ -55,7 +55,7 @@ roleRef:
   name: broker-config-writer
   apiGroup: rbac.authorization.k8s.io
 ---
-# Calendar provider credentials + per-device tokens are NOT in here — see secret.example.yaml.
+# Calendar provider credentials + per-device tokens are NOT in here — see secret.yaml.example.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -86,7 +86,11 @@ data:
       low_battery_pct: 45
       clear_pct: 55
       min_renotify: "24h"
-      webhook_url: "${ALERT_WEBHOOK_URL}"
+      # Empty = log alerts instead of pushing them. To enable Slack, put alert-webhook-url in
+      # broker-secrets AND change this to "${ALERT_WEBHOOK_URL}". Referencing a ${VAR} whose key
+      # you haven't created is a startup error — the Deployment marks it optional, so the pod
+      # would otherwise crashloop on a value you were told you could omit.
+      webhook_url: ""
       stale_after: "1h"   # feeds /api/v1/status; keep in sync with DisplayStale's `3600` in alerts.yaml
     # Fleet-wide Wi-Fi for the /admin "Add a device" provisioning wizard. The PSK stays a ${VAR}
     # reference so it lives in broker-secrets, not in this ConfigMap — MarshalForPersist restores
@@ -94,7 +98,9 @@ data:
     # leaks into the ConfigMap either.
     fleet:
       wifi_ssid: "REPLACE_WITH_YOUR_SSID"
-      wifi_psk: "${MD_WIFI_PSK}"
+      # Leave empty to disable the "Add a device" wizard. To enable it, add the wifi-psk key to
+      # broker-secrets AND change this to "${MD_WIFI_PSK}" — see the note on webhook_url above.
+      wifi_psk: ""
     # Spelled out explicitly (rather than left as the default "auto") so `kubectl get configmap
     # broker-config -o yaml` shows the real, resolved behavior at a glance instead of requiring a
     # reader to know k3s auto-detection rules. These are the SAME values "auto" already resolves to
@@ -174,7 +180,7 @@ spec:
               valueFrom:
                 secretKeyRef: { name: broker-secrets, key: wifi-psk, optional: true }
             # Session-signing sanity check for the /admin, /manager, /dashboard logins — see
-            # secret.example.yaml. Login accounts themselves live in the ConfigMap's `users:` list
+            # secret.yaml.example. Login accounts themselves live in the ConfigMap's `users:` list
             # above, not here (managed from /admin's Access panel after the first bootstrap admin).
             - name: SESSION_SECRET
               valueFrom:

@@ -122,7 +122,7 @@ probe from the host as above, or point an external monitor at the published port
 (for Grafana), optionally MetalLB and Longhorn depending on your cluster's networking/storage setup.
 
 **Install runbook:** unchanged — see `backend/deploy/k3s/broker.yaml.example`,
-`secret.example.yaml`, `alerts.yaml`, and `docs/BUILD-GUIDE.md` Steps 3–4.
+`secret.yaml.example`, `alerts.yaml`, and `docs/BUILD-GUIDE.md` Steps 3–4.
 
 **Resolved config_persistence:** `auto` → `configmap` (today's behavior, byte-for-byte). The
 `broker.yaml.example` ConfigMap now spells this out explicitly as
