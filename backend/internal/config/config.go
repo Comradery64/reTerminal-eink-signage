@@ -4,8 +4,10 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"log/slog"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -245,15 +247,40 @@ const minEnvRefLen = 8
 // Load reads YAML, expands ${ENV} references, and validates. Every expansion actually performed is
 // remembered on the returned Config (see envRefs) so a later MarshalForPersist can put the ${VAR}
 // token back instead of writing the expanded secret to disk or into a ConfigMap.
+//
+// A ${VAR} that expands to nothing is a hard error, not an empty string. This is load-bearing, and
+// the reason is not obvious: an unset variable produced no envRefs entry, so MarshalForPersist had
+// no token to restore, so the first admin save wrote "" straight over the ${VAR} in the ConfigMap —
+// silently and permanently destroying the reference. Restoring the Secret key afterwards did not
+// undo it; someone had to know to hand-edit the reference back. That is not hypothetical: the live
+// cluster's alerts.webhook_url is "" today with its Secret key absent, and it went unnoticed
+// precisely because an empty webhook is harmless (it degrades to log-only).
+//
+// Recording the ref anyway is not the fix — it is worse. MarshalForPersist substitutes by
+// bytes.ReplaceAll(out, expanded, token), and an empty `expanded` splices the token between every
+// byte of the document. Empty is a degenerate case the substring design cannot express at all.
+//
+// A dangling ref is always a deployment error: "legitimately empty" is already expressible by
+// writing `webhook_url: ""`. Naming a variable that does not exist is a way of saying "a secret
+// belongs here and is missing", so failing at boot turns silent permanent corruption into a loud,
+// trivially-diagnosed startup error.
 func Load(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
 	envRefs := map[string]string{}
+	// fromEnv tracks every value that came from an expansion, including ones too short for
+	// envRefs' substitution filter. Only used to tell a literal from an expanded ref when
+	// warning about plaintext secrets below — never for substitution.
+	fromEnv := map[string]bool{}
 	raw = envRef.ReplaceAllFunc(raw, func(m []byte) []byte {
-		key := envRef.FindSubmatch(m)[1]
-		val := os.Getenv(string(key))
+		key := string(envRef.FindSubmatch(m)[1])
+		val, ok := os.LookupEnv(key)
+		if !ok || val == "" {
+			return m // leave the token intact; detected as dangling after parsing, below
+		}
+		fromEnv[val] = true
 		if len(val) >= minEnvRefLen {
 			envRefs[val] = string(m) // m is the whole "${VAR}" token
 		}
@@ -264,7 +291,33 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(raw, &c); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+
+	// Dangling refs are detected AFTER parsing, not during substitution above. The regex runs over
+	// raw bytes, so it also matches ${VAR} written inside a YAML comment — and this file documents
+	// the mechanism in its own comments ("keep it as ${MD_WIFI_PSK} and inject from a Secret").
+	// Erroring during substitution would make a config unstartable because of its own documentation.
+	// Re-marshalling the parsed struct drops every comment, so whatever ${...} survives here is a
+	// reference that landed in a real configuration value.
+	if remarshalled, err := yaml.Marshal(&c); err == nil {
+		if dangling := envRef.FindAllSubmatch(remarshalled, -1); len(dangling) > 0 {
+			seen := map[string]bool{}
+			var missing []string
+			for _, d := range dangling {
+				if k := string(d[1]); !seen[k] {
+					seen[k] = true
+					missing = append(missing, k)
+				}
+			}
+			sort.Strings(missing) // deterministic message regardless of field order
+			return nil, fmt.Errorf("config %s references environment variable(s) that are unset or "+
+				"empty: %s — set them, or write a literal value (e.g. `webhook_url: \"\"`) if the "+
+				"field is genuinely meant to be empty. Starting with the reference unexpanded would "+
+				"let the next admin save overwrite it permanently", path, strings.Join(missing, ", "))
+		}
+	}
+
 	c.envRefs = envRefs
+	c.warnPlaintextSecrets(fromEnv)
 	c.applyDefaults()
 	if err := c.Validate(); err != nil {
 		return nil, err
@@ -277,15 +330,59 @@ func Load(path string) (*Config, error) {
 // into the ConfigMap (or, worse, an on-disk config file) on the first admin save. Skips
 // expansions shorter than minEnvRefLen (already excluded when envRefs was built) — nothing further
 // to do here beyond the substitution itself.
+// Substitution runs longest-expanded-value-first. Go randomizes map iteration order, so if one
+// expanded value is a substring of another, iterating the map directly would make the output depend
+// on run-to-run ordering — the same Config could marshal two different ways, and the shorter value
+// could chew a hole in the longer one before it was ever matched. Longest-first is the standard
+// fix and makes the result deterministic.
 func (c *Config) MarshalForPersist() ([]byte, error) {
 	out, err := yaml.Marshal(c)
 	if err != nil {
 		return nil, fmt.Errorf("marshal config: %w", err)
 	}
-	for expanded, token := range c.envRefs {
-		out = bytes.ReplaceAll(out, []byte(expanded), []byte(token))
+	expanded := make([]string, 0, len(c.envRefs))
+	for v := range c.envRefs {
+		expanded = append(expanded, v)
+	}
+	sort.Slice(expanded, func(i, j int) bool {
+		if len(expanded[i]) != len(expanded[j]) {
+			return len(expanded[i]) > len(expanded[j])
+		}
+		return expanded[i] < expanded[j] // stable tiebreak for equal-length values
+	})
+	for _, v := range expanded {
+		out = bytes.ReplaceAll(out, []byte(v), []byte(c.envRefs[v]))
 	}
 	return out, nil
+}
+
+// secretFields are the values that must never be written back as plaintext. Kept as one list so
+// adding a secret field to Config is a one-line change here rather than a silent omission.
+func (c *Config) secretFields() map[string]string {
+	return map[string]string{
+		"auth.session_secret": c.Auth.SessionSecret,
+		"alerts.webhook_url":  c.Alerts.WebhookURL,
+		"fleet.wifi_psk":      c.Fleet.WifiPSK,
+	}
+}
+
+// warnPlaintextSecrets logs when a secret field holds a literal rather than a ${VAR} reference.
+// The ${VAR} mechanism is opt-in per value and silent when unused, which is exactly how a plaintext
+// session_secret reached the live ConfigMap in the first place: nothing anywhere said "this is a
+// secret and you wrote it in the clear." A literal still works, so this warns rather than refusing —
+// but it now says so out loud, once, at startup.
+//
+// Values shorter than minEnvRefLen that DID come from the environment are still flagged, since
+// fromEnv records every expansion regardless of length. A secret that short is its own problem.
+func (c *Config) warnPlaintextSecrets(fromEnv map[string]bool) {
+	for name, val := range c.secretFields() {
+		if val == "" || fromEnv[val] {
+			continue
+		}
+		slog.Warn("secret is a literal in the config file, not a ${VAR} reference — it will be "+
+			"written back in plaintext on every admin save; move it to an env var/Secret and "+
+			"reference it instead", "field", name)
+	}
 }
 
 func (c *Config) applyDefaults() {

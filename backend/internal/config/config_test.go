@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
@@ -649,5 +650,69 @@ fleet:
 	}
 	if !strings.Contains(outStr, "New_SSID") {
 		t.Fatal("the SSID is not a secret and must persist as a literal")
+	}
+}
+
+// TestLoadRejectsDanglingEnvRef guards the bug that already fired in production: a ${VAR} whose
+// variable is unset used to expand to "", which recorded no envRef, so the first admin save wrote
+// "" over the ${VAR} in the ConfigMap — destroying the reference permanently and silently. Load
+// must refuse to start instead, naming the variable.
+func TestLoadRejectsDanglingEnvRef(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	yml := "listen: \":8080\"\nprovider: \"demo\"\nalerts:\n  webhook_url: \"${DEFINITELY_UNSET_VAR_XYZ}\"\n"
+	if err := os.WriteFile(path, []byte(yml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	os.Unsetenv("DEFINITELY_UNSET_VAR_XYZ")
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load must refuse a config whose ${VAR} is unset; a silent empty value destroys the reference on first save")
+	}
+	if !strings.Contains(err.Error(), "DEFINITELY_UNSET_VAR_XYZ") {
+		t.Fatalf("error must name the offending variable so it is diagnosable; got: %v", err)
+	}
+}
+
+// TestLoadIgnoresEnvRefsInComments: the ${VAR} regex runs over raw bytes, and this project's own
+// config files document the mechanism in their comments. A config must never be unstartable because
+// of its own documentation.
+func TestLoadIgnoresEnvRefsInComments(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	yml := "listen: \":8080\"\nprovider: \"demo\"\n# in production write \"${SOME_UNSET_DOC_VAR}\" here\nalerts:\n  webhook_url: \"\"\nrooms:\n  - device_id: \"rt-a\"\n    name: \"A\"\n    room: \"a@example.com\"\n    token_sha256: \"" + strings.Repeat("a", 64) + "\"\n"
+	if err := os.WriteFile(path, []byte(yml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	os.Unsetenv("SOME_UNSET_DOC_VAR")
+	if _, err := Load(path); err != nil {
+		t.Fatalf("a ${VAR} mentioned only in a comment must not block startup: %v", err)
+	}
+}
+
+// TestMarshalForPersistIsDeterministic pins BUG 2: envRefs is a map, and Go randomizes map
+// iteration, so when one expanded value is a substring of another the output could differ run to
+// run. Substitution must be longest-value-first.
+func TestMarshalForPersistIsDeterministic(t *testing.T) {
+	c := &Config{envRefs: map[string]string{
+		"supersecretvalue":      "${LONG_VAR}",
+		"supersecretvalue-more": "${LONGER_VAR}",
+	}}
+	c.Auth.SessionSecret = "supersecretvalue-more"
+	first, err := c.MarshalForPersist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 50; i++ {
+		again, err := c.MarshalForPersist()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(first, again) {
+			t.Fatalf("MarshalForPersist must be deterministic; iteration %d differed:\n%s\nvs\n%s", i, first, again)
+		}
+	}
+	if !strings.Contains(string(first), "${LONGER_VAR}") {
+		t.Fatalf("longest expanded value must win; got:\n%s", first)
 	}
 }

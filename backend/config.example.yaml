@@ -40,7 +40,10 @@ alerts:
   low_battery_pct: 45        # fire at/below this; 45 (not 40) gives buffer since LiPo %→V is nonlinear
   clear_pct: 55              # re-arm only after charging back above this (hysteresis)
   min_renotify: "24h"        # if still low, remind at most once per day
-  webhook_url: "${ALERT_WEBHOOK_URL}"   # Slack incoming webhook; empty = log only
+  # Slack incoming webhook; empty = log only. Left empty so this file starts as-is (see the README
+  # quick start). In production put the real URL in a Secret/env file and write "${ALERT_WEBHOOK_URL}"
+  # here instead — a ${VAR} whose variable is unset is a startup error, never a silent empty value.
+  webhook_url: ""
   stale_after: "1h"          # no telemetry for this long = "stale" on /status; matches DisplayStale below
 
 # OTA firmware rollout (optional). Leave version empty to disable. When set, the broker advertises
@@ -65,7 +68,8 @@ firmware:
 # itself (internal/nvs) and hands back only opaque partition bytes.
 fleet:
   wifi_ssid: ""                                # e.g. "Corp_IoT"; the network every display joins
-  wifi_psk: "${MD_WIFI_PSK}"                   # WPA2 pre-shared key; leave both empty to disable the wizard
+  wifi_psk: ""                                 # WPA2 pre-shared key; leave both empty to disable the wizard
+                                               # In production: "${MD_WIFI_PSK}", injected from a Secret.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Both blocks below are OPTIONAL. Omitting them entirely reproduces today's behavior exactly:
