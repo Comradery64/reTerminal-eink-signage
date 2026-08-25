@@ -50,8 +50,18 @@ docs/       Build guide, deploy tiers, hardware reference, power budget, securit
 ## Quick start
 
 ```bash
-# Backend
-cd backend && go build ./... && ./broker -config ./config.example.yaml
+# Backend — runs immediately: fake schedule, no calendar, credentials, or hardware needed.
+cd backend && go build ./...
+./broker -demo -config ./config.demo.yaml       # serves on :8080
+
+# In another shell — fetch a real rendered frame for the demo room:
+TOKEN=demo-token ../tools/fake_device.sh display
+
+# config.example.yaml is the TEMPLATE for a real deployment, not a runnable config: copy it,
+# then fill in your own room calendar addresses and device token hashes
+# (tools/provision_all.sh generates both). As shipped it refuses to start, by design —
+# token_sha256 is the placeholder REPLACE_WITH_SHA256_OF_DEVICE_TOKEN.
+
 # Production deploy: pick a tier and follow its runbook — see docs/DEPLOY-TIERS.md.
 #   Tier 1 (plain binary + systemd, no cluster):  backend/deploy/systemd/README.md
 #   Tier 2 (container / compose):                 backend/deploy/compose/README.md
@@ -59,10 +69,11 @@ cd backend && go build ./... && ./broker -config ./config.example.yaml
 #                                                  in your own values, drop the .example suffix.
 
 # Preview the rendered room layout to PNG — no hardware/calendar/broker needed:
-go run ./cmd/preview               # writes preview-available.png / -inuse.png / -soon.png
+go run ./cmd/preview               # writes preview-{available,inuse,soon,nextday,backtoback}.png
 
-# Simulate a device against a running broker (test payloads + battery alerts):
-TOKEN=<raw-token> ../tools/fake_device.sh battery-demo
+# Simulate a device against a running broker (test payloads + battery alerts).
+# Against the demo broker above the token is "demo-token"; against a real one, that device's token:
+TOKEN=demo-token ../tools/fake_device.sh battery-demo
 
 # Firmware
 cd firmware
