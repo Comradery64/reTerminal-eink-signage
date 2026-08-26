@@ -3,10 +3,13 @@
 package telemetry
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -45,9 +48,74 @@ type state struct {
 type Store struct {
 	mu sync.RWMutex
 	m  map[string]*state
+
+	// sink and everything below are nil/zero for New() — the default "memory" backend. Every path
+	// below is gated on sink != nil so a flagless deployment gets byte-identical behavior to before
+	// this change: no goroutines beyond nothing, no files, no extra /metrics lines.
+	sink Sink
+	log  *slog.Logger
+
+	// q carries Records from Ingest to Run's single writer goroutine. Buffered and drained
+	// asynchronously so a slow or full disk never adds latency to a device's telemetry POST — see
+	// Ingest's comment for why that matters on a battery-powered device.
+	q chan Record
+
+	sinkErrs atomic.Int64 // Append/Prune failures, surfaced as md_telemetry_sink_errors_total
+	dropped  atomic.Int64 // Records dropped because q was full, surfaced as md_telemetry_sink_dropped_total
+
+	wg        sync.WaitGroup // Run's writer goroutine, so Close can wait for it to drain and exit
+	closeOnce sync.Once
+
+	// closeMu guards q's open/closed state against Ingest's send. A device telemetry POST can
+	// land on Ingest at the exact moment Close runs (SIGTERM while net/http is still accepting
+	// connections — there's no graceful srv.Shutdown — and k8s endpoint removal is asynchronous),
+	// so Close cannot just close(q): Ingest's "select { case s.q <- rec: default: }" is only safe
+	// from a concurrent close if the two are mutually exclusive. Ingest holds the read side for
+	// the duration of its send; Close takes the write side, so it only closes q once it knows no
+	// Ingest call is (or ever will be, since closed is set first) still sending — turning what used
+	// to be a "send on closed channel" panic into a plain counted drop.
+	closeMu sync.RWMutex
+	closed  bool
 }
 
 func New() *Store { return &Store{m: make(map[string]*state)} }
+
+// NewWithSink constructs a Store backed by a durable Sink and warm-starts the in-memory map from
+// sink.LoadLatest(), so /metrics, /status and /dashboard are not blank for a whole poll cycle
+// after a restart. queueSize sizes the channel Ingest feeds and Run drains (config_persistence's
+// telemetry.sqlite.queue_size — default 256; see Ingest for why a bounded, droppable queue beats a
+// blocking one here).
+//
+// roomStatus is deliberately left empty for every warm-started device: it's not part of Record
+// (it comes from the poller's calendar computation, not firmware telemetry — see SetRoomStatus),
+// and the poller repopulates it for every configured room within one tick of startup anyway.
+func NewWithSink(sink Sink, log *slog.Logger, queueSize int) (*Store, error) {
+	if log == nil {
+		log = slog.Default()
+	}
+	if queueSize <= 0 {
+		queueSize = 256
+	}
+	s := &Store{
+		m:    make(map[string]*state),
+		sink: sink,
+		log:  log,
+		q:    make(chan Record, queueSize),
+	}
+	recs, err := sink.LoadLatest()
+	if err != nil {
+		return nil, fmt.Errorf("telemetry: warm-start from sink failed: %w", err)
+	}
+	for _, rec := range recs {
+		s.m[rec.DeviceID] = &state{
+			last:         rec.Report,
+			lastSeen:     rec.LastSeen,
+			lastRendered: rec.LastRendered,
+			reported:     true,
+		}
+	}
+	return s, nil
+}
 
 func (s *Store) Ingest(deviceID string, r Report, now time.Time) {
 	s.mu.Lock()
@@ -62,6 +130,123 @@ func (s *Store) Ingest(deviceID string, r Report, now time.Time) {
 	}
 	*st = state{last: r, lastSeen: now, lastRendered: lastRendered, roomStatus: st.roomStatus, reported: true}
 	s.mu.Unlock()
+
+	// Disk I/O must never happen under the fleet-wide RWMutex above, and must never block this
+	// call at all: this runs on the device's telemetry POST, and every extra 100ms awake is battery
+	// this project spent three months of design budget saving. A non-blocking send means a full
+	// queue drops the newest history sample instead of stalling a wake — strictly the cheaper
+	// failure of the two.
+	if s.sink != nil {
+		// closeMu's read side makes this send mutually exclusive with Close closing q (see closeMu's
+		// doc comment) — without it, a POST landing during shutdown would panic instead of dropping.
+		s.closeMu.RLock()
+		if s.closed {
+			s.dropped.Add(1)
+		} else {
+			select {
+			case s.q <- Record{DeviceID: deviceID, Report: r, LastSeen: now, LastRendered: lastRendered}:
+			default:
+				s.dropped.Add(1)
+			}
+		}
+		s.closeMu.RUnlock()
+	}
+}
+
+// Run owns the only goroutine that ever touches the sink: it drains q as records arrive (so
+// history is written close to real-time) and, on a ticker, prunes samples older than retention.
+// It returns immediately when sink is nil (backend "memory"/"prometheus"), so those backends incur
+// no extra goroutine at all.
+//
+// retention <= 0 disables pruning (telemetry.sqlite.retention_days: 0, documented as "keep
+// forever, unbounded growth, not recommended").
+func (s *Store) Run(ctx context.Context, retention, pruneInterval time.Duration) {
+	if s.sink == nil {
+		return
+	}
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+
+		var ticker *time.Ticker
+		var tickC <-chan time.Time
+		if pruneInterval > 0 {
+			ticker = time.NewTicker(pruneInterval)
+			defer ticker.Stop()
+			tickC = ticker.C
+		}
+
+		// Prune once at start, not just on the first tick, so a broker that restarts more often
+		// than pruneInterval (6h default) still eventually reclaims space rather than never pruning
+		// at all.
+		s.prune(retention)
+
+		for {
+			select {
+			case rec, ok := <-s.q:
+				if !ok {
+					return
+				}
+				if err := s.sink.Append(rec); err != nil {
+					s.sinkErrs.Add(1)
+					s.log.Error("telemetry sink append failed", "device", rec.DeviceID, "err", err)
+				}
+			case <-tickC:
+				s.prune(retention)
+			case <-ctx.Done():
+				// Drain whatever is already queued before exiting, so a normal shutdown doesn't
+				// discard the last few in-flight reports.
+				for {
+					select {
+					case rec, ok := <-s.q:
+						if !ok {
+							return
+						}
+						if err := s.sink.Append(rec); err != nil {
+							s.sinkErrs.Add(1)
+							s.log.Error("telemetry sink append failed", "device", rec.DeviceID, "err", err)
+						}
+					default:
+						return
+					}
+				}
+			}
+		}
+	}()
+}
+
+func (s *Store) prune(retention time.Duration) {
+	if retention <= 0 {
+		return
+	}
+	n, err := s.sink.Prune(time.Now().Add(-retention))
+	if err != nil {
+		s.sinkErrs.Add(1)
+		s.log.Error("telemetry sink prune failed", "err", err)
+		return
+	}
+	if n > 0 {
+		s.log.Info("telemetry sink pruned old samples", "rows_removed", n)
+	}
+}
+
+// Close drains the queue, waits for Run's writer goroutine to exit, and closes the sink. Safe to
+// call multiple times (idempotent) and safe to call when sink is nil (both are no-ops beyond the
+// first call).
+func (s *Store) Close() error {
+	var err error
+	s.closeOnce.Do(func() {
+		if s.sink == nil {
+			return
+		}
+		s.closeMu.Lock()
+		s.closed = true
+		close(s.q)
+		s.closeMu.Unlock()
+		s.wg.Wait()
+		err = s.sink.Close()
+	})
+	return err
 }
 
 // SetRoomStatus records the room's current calendar-derived state (calendar.RoomStatus) —
@@ -174,6 +359,20 @@ func (s *Store) WriteMetrics(w io.Writer, now time.Time) {
 	fmt.Fprintln(w, "# TYPE md_room_status_info gauge")
 	for _, id := range statusIDs {
 		fmt.Fprintf(w, "md_room_status_info{device=%q,status=%q}1\n", id, s.m[id].roomStatus)
+	}
+
+	// Only emitted when a sink is configured (backend "sqlite"): emitting these unconditionally
+	// would change /metrics output for the default "memory" backend, which the backwards-compat
+	// constraint forbids. Fleet-wide (no device label) since they describe the sink itself, not any
+	// one device.
+	if s.sink != nil {
+		fmt.Fprintln(w, "# HELP md_telemetry_sink_errors_total Telemetry sink Append/Prune failures.")
+		fmt.Fprintln(w, "# TYPE md_telemetry_sink_errors_total counter")
+		fmt.Fprintf(w, "md_telemetry_sink_errors_total %d\n", s.sinkErrs.Load())
+
+		fmt.Fprintln(w, "# HELP md_telemetry_sink_dropped_total Telemetry records dropped because the sink's write queue was full.")
+		fmt.Fprintln(w, "# TYPE md_telemetry_sink_dropped_total counter")
+		fmt.Fprintf(w, "md_telemetry_sink_dropped_total %d\n", s.dropped.Load())
 	}
 }
 

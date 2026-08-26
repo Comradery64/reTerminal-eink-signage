@@ -10,9 +10,12 @@ import "github.com/Comradery64/reTerminal-eink-signage/backend/internal/config"
 // admin edits exactly what's stored — WakeMode == "" means "no override, uses fleet default".
 // TokenConfigured never exposes the token hash itself, only whether one is set.
 type RoomView struct {
-	DeviceID            string
-	Name                string
-	Room                string
+	DeviceID string
+	Name     string
+	Room     string
+	// Label is the panel's position within its room, set only where a room has several displays
+	// (config.Room.Label). Empty otherwise, so the rooms table stays unchanged for the common case.
+	Label               string
 	WakeMode            string
 	FlatIntervalSeconds uint32
 	TokenConfigured     bool
@@ -25,11 +28,19 @@ type UserView struct {
 	Role     string
 }
 
+// FleetView is the provisioning wizard's fleet Wi-Fi state. WifiPSKConfigured never exposes the
+// PSK itself, only whether one is present — mirroring RoomView.TokenConfigured.
+type FleetView struct {
+	WifiSSID          string
+	WifiPSKConfigured bool
+}
+
 // View is the full admin page's data.
 type View struct {
 	Wake     config.WakeConfig
 	Alerts   config.AlertConfig
 	Firmware config.FirmwareConfig
+	Fleet    FleetView
 	Rooms    []RoomView
 	Users    []UserView
 }
@@ -43,6 +54,7 @@ func Build(cfg *config.Config) View {
 			DeviceID:        r.DeviceID,
 			Name:            r.Name,
 			Room:            r.Room,
+			Label:           r.Label,
 			TokenConfigured: r.TokenSHA256 != "",
 		}
 		if r.WakeMode != nil {
@@ -59,5 +71,15 @@ func Build(cfg *config.Config) View {
 		users = append(users, UserView{Username: u.Username, Role: u.Role})
 	}
 
-	return View{Wake: cfg.Wake, Alerts: cfg.Alerts, Firmware: cfg.Firmware, Rooms: rooms, Users: users}
+	return View{
+		Wake:     cfg.Wake,
+		Alerts:   cfg.Alerts,
+		Firmware: cfg.Firmware,
+		Fleet: FleetView{
+			WifiSSID:          cfg.Fleet.WifiSSID,
+			WifiPSKConfigured: cfg.Fleet.WifiPSK != "",
+		},
+		Rooms: rooms,
+		Users: users,
+	}
 }

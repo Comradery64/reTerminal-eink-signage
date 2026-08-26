@@ -2,9 +2,12 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
+	"log/slog"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,17 +17,70 @@ import (
 )
 
 type Config struct {
-	Listen       string         `yaml:"listen"`
-	PollInterval time.Duration  `yaml:"poll_interval"`
-	Wake         WakeConfig     `yaml:"wake"`
-	Render       RenderConfig   `yaml:"render"`
-	Provider     string         `yaml:"provider"`
-	Google       GoogleConfig   `yaml:"google"`
-	Alerts       AlertConfig    `yaml:"alerts"`
-	Firmware     FirmwareConfig `yaml:"firmware"`
-	Auth         AuthConfig     `yaml:"auth"`
-	Rooms        []Room         `yaml:"rooms"`
-	Users        []User         `yaml:"users"`
+	Listen            string                  `yaml:"listen"`
+	PollInterval      time.Duration           `yaml:"poll_interval"`
+	Wake              WakeConfig              `yaml:"wake"`
+	Render            RenderConfig            `yaml:"render"`
+	Provider          string                  `yaml:"provider"`
+	Google            GoogleConfig            `yaml:"google"`
+	Alerts            AlertConfig             `yaml:"alerts"`
+	Firmware          FirmwareConfig          `yaml:"firmware"`
+	Fleet             FleetConfig             `yaml:"fleet"`
+	Auth              AuthConfig              `yaml:"auth"`
+	Telemetry         TelemetryConfig         `yaml:"telemetry"`
+	ConfigPersistence ConfigPersistenceConfig `yaml:"config_persistence"`
+	Rooms             []Room                  `yaml:"rooms"`
+	Users             []User                  `yaml:"users"`
+
+	// envRefs records every ${VAR} -> expanded-value substitution Load performed, so
+	// MarshalForPersist can undo them before a config ever gets written back out. Unexported: never
+	// round-trips through YAML, and clone() carries it forward via Config's plain struct copy since
+	// it's never mutated after Load (only ever read).
+	envRefs map[string]string
+}
+
+// TelemetryConfig selects where telemetry history lives, beyond the in-memory "latest report per
+// device" view that /metrics, /status, and /dashboard always have. Omitting this block entirely
+// (an existing config.yaml) resolves to "memory" — today's behavior exactly.
+type TelemetryConfig struct {
+	Backend string                `yaml:"backend"` // "memory" (default) | "sqlite" | "prometheus"
+	SQLite  TelemetrySQLiteConfig `yaml:"sqlite"`
+}
+
+// TelemetrySQLiteConfig configures the optional local time-series backend (see
+// internal/telemetry's Sink) — pure-Go modernc.org/sqlite, no cgo, so the broker stays a single
+// static binary.
+type TelemetrySQLiteConfig struct {
+	Path string `yaml:"path"`
+	// RetentionDays deliberately breaks this repo's usual duration-string convention (e.g.
+	// AlertConfig.MinRenotify's "24h") — spelling "90 days" as "2160h" is a readability trap for an
+	// operator tuning retention, who reasons in days, not hours. 0 means keep forever (unbounded
+	// growth on disk; documented as unsupported-but-allowed, not recommended).
+	RetentionDays int           `yaml:"retention_days"`
+	PruneInterval time.Duration `yaml:"prune_interval"`
+	QueueSize     int           `yaml:"queue_size"` // in-flight writes buffered off the device POST path
+}
+
+// ConfigPersistenceConfig selects where a live /admin or /manager edit goes to become durable.
+// Omitting this block entirely (an existing config.yaml) resolves to "auto", which reproduces
+// today's behavior exactly: the in-cluster ConfigMap when running in k3s, nowhere otherwise.
+type ConfigPersistenceConfig struct {
+	Mode      string                 `yaml:"mode"` // "auto"(default)|"file"|"configmap"|"none"
+	File      PersistFileConfig      `yaml:"file"`
+	ConfigMap PersistConfigMapConfig `yaml:"configmap"`
+}
+
+type PersistFileConfig struct {
+	Path string `yaml:"path"` // empty = write back to the file given by -config
+}
+
+// PersistConfigMapConfig carries the ConfigMap coordinates that used to be hardcoded constants in
+// internal/server/configwrite.go — defaults below match those constants exactly, so an existing
+// deployment that never sets this block behaves identically.
+type PersistConfigMapConfig struct {
+	Namespace string `yaml:"namespace"`
+	Name      string `yaml:"name"`
+	Key       string `yaml:"key"`
 }
 
 // AuthConfig holds settings shared across every login on the /admin, /manager, and /dashboard
@@ -70,6 +126,26 @@ type FirmwareConfig struct {
 	Version string `yaml:"version"` // target build, e.g. "1.1.0"; empty disables OTA advertising
 	URL     string `yaml:"url"`     // HTTPS URL of the signed .bin (may point at this broker's /firmware/)
 	Dir     string `yaml:"dir"`     // optional: serve image files from this dir at /firmware/
+
+	// WebToolsURL is the ESP Web Tools module the /admin "Add a device" wizard loads to flash a
+	// unit over WebSerial. Defaults to the public CDN build, which requires the *operator's
+	// browser* (not the broker) to reach the internet. On an isolated network, vendor the file
+	// into firmware.dir and point this at "/firmware/esp-web-tools.js" instead — the wizard
+	// doesn't care where the module comes from.
+	WebToolsURL string `yaml:"web_tools_url"`
+}
+
+// FleetConfig holds settings shared by every display, set once instead of per device. Today that
+// is just the Wi-Fi credentials the provisioning wizard bakes into each unit's NVS: making them a
+// single fleet-wide value is the fix for hand-typing a stale SSID into one device at a time.
+//
+// WifiPSK is a secret and follows the same ${ENV_VAR} indirection as AlertConfig.WebhookURL —
+// keep it as "${MD_WIFI_PSK}" in the ConfigMap and inject the real value from the broker-secrets
+// Secret, so Load expands it in memory and MarshalForPersist restores the token before any admin
+// save writes the config back out. It is never served to a browser; see internal/nvs.
+type FleetConfig struct {
+	WifiSSID string `yaml:"wifi_ssid"`
+	WifiPSK  string `yaml:"wifi_psk"`
 }
 
 // AlertConfig drives the in-broker low-battery notification to the building manager, and doubles
@@ -133,11 +209,23 @@ type GoogleConfig struct {
 	CredentialsFile string `yaml:"credentials_file"`
 }
 
+// Room is one *display*, not one meeting room — several entries may share the same Room
+// (calendar address) when a room has more than one panel (e.g. a door plaque plus an interior
+// display). DeviceID is the unique key; Room is deliberately not unique. When it repeats, Label
+// is what tells the two panels apart everywhere a human looks (see Label, and status.Device).
 type Room struct {
 	DeviceID    string `yaml:"device_id"`
 	Name        string `yaml:"name"`
 	Room        string `yaml:"room"`
 	TokenSHA256 string `yaml:"token_sha256"`
+
+	// Label distinguishes multiple displays serving the same Room — the panel's physical
+	// position ("Door", "Interior wall"), not the room's name. Optional and empty for the
+	// overwhelmingly common one-display-per-room case; required (and unique) once two entries
+	// share a Room, enforced in Validate, so a fleet can never contain two indistinguishable
+	// cards on /dashboard. It affects presentation only: both panels in a room render the same
+	// image, since Compose keys off the schedule and Name.
+	Label string `yaml:"label,omitempty"`
 
 	// WakeMode overrides WakeConfig.Mode for this room only — e.g. a room whose occupant just
 	// wants a plain 15-min check-in without calendar-driven scheduling. nil = use fleet default.
@@ -150,26 +238,151 @@ type Room struct {
 
 var envRef = regexp.MustCompile(`\$\{([A-Z0-9_]+)\}`)
 
-// Load reads YAML, expands ${ENV} references, and validates.
+// minEnvRefLen is the shortest expanded value Load will remember for MarshalForPersist to restore
+// — anything shorter risks a coincidental substring match elsewhere in the marshaled YAML (e.g. a
+// 2-character env value that also happens to appear inside an unrelated field), rewriting text
+// that was never a secret in the first place.
+const minEnvRefLen = 8
+
+// Load reads YAML, expands ${ENV} references, and validates. Every expansion actually performed is
+// remembered on the returned Config (see envRefs) so a later MarshalForPersist can put the ${VAR}
+// token back instead of writing the expanded secret to disk or into a ConfigMap.
+//
+// A ${VAR} that expands to nothing is a hard error, not an empty string. This is load-bearing, and
+// the reason is not obvious: an unset variable produced no envRefs entry, so MarshalForPersist had
+// no token to restore, so the first admin save wrote "" straight over the ${VAR} in the ConfigMap —
+// silently and permanently destroying the reference. Restoring the Secret key afterwards did not
+// undo it; someone had to know to hand-edit the reference back. That is not hypothetical: the live
+// cluster's alerts.webhook_url is "" today with its Secret key absent, and it went unnoticed
+// precisely because an empty webhook is harmless (it degrades to log-only).
+//
+// Recording the ref anyway is not the fix — it is worse. MarshalForPersist substitutes by
+// bytes.ReplaceAll(out, expanded, token), and an empty `expanded` splices the token between every
+// byte of the document. Empty is a degenerate case the substring design cannot express at all.
+//
+// A dangling ref is always a deployment error: "legitimately empty" is already expressible by
+// writing `webhook_url: ""`. Naming a variable that does not exist is a way of saying "a secret
+// belongs here and is missing", so failing at boot turns silent permanent corruption into a loud,
+// trivially-diagnosed startup error.
 func Load(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
+	envRefs := map[string]string{}
+	// fromEnv tracks every value that came from an expansion, including ones too short for
+	// envRefs' substitution filter. Only used to tell a literal from an expanded ref when
+	// warning about plaintext secrets below — never for substitution.
+	fromEnv := map[string]bool{}
 	raw = envRef.ReplaceAllFunc(raw, func(m []byte) []byte {
-		key := envRef.FindSubmatch(m)[1]
-		return []byte(os.Getenv(string(key)))
+		key := string(envRef.FindSubmatch(m)[1])
+		val, ok := os.LookupEnv(key)
+		if !ok || val == "" {
+			return m // leave the token intact; detected as dangling after parsing, below
+		}
+		fromEnv[val] = true
+		if len(val) >= minEnvRefLen {
+			envRefs[val] = string(m) // m is the whole "${VAR}" token
+		}
+		return []byte(val)
 	})
 
 	var c Config
 	if err := yaml.Unmarshal(raw, &c); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+
+	// Dangling refs are detected AFTER parsing, not during substitution above. The regex runs over
+	// raw bytes, so it also matches ${VAR} written inside a YAML comment — and this file documents
+	// the mechanism in its own comments ("keep it as ${MD_WIFI_PSK} and inject from a Secret").
+	// Erroring during substitution would make a config unstartable because of its own documentation.
+	// Re-marshalling the parsed struct drops every comment, so whatever ${...} survives here is a
+	// reference that landed in a real configuration value.
+	if remarshalled, err := yaml.Marshal(&c); err == nil {
+		if dangling := envRef.FindAllSubmatch(remarshalled, -1); len(dangling) > 0 {
+			seen := map[string]bool{}
+			var missing []string
+			for _, d := range dangling {
+				if k := string(d[1]); !seen[k] {
+					seen[k] = true
+					missing = append(missing, k)
+				}
+			}
+			sort.Strings(missing) // deterministic message regardless of field order
+			return nil, fmt.Errorf("config %s references environment variable(s) that are unset or "+
+				"empty: %s — set them, or write a literal value (e.g. `webhook_url: \"\"`) if the "+
+				"field is genuinely meant to be empty. Starting with the reference unexpanded would "+
+				"let the next admin save overwrite it permanently", path, strings.Join(missing, ", "))
+		}
+	}
+
+	c.envRefs = envRefs
+	c.warnPlaintextSecrets(fromEnv)
 	c.applyDefaults()
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
 	return &c, nil
+}
+
+// MarshalForPersist marshals c for write-back with ${ENV} references restored. Load expands
+// ${VAR} in memory; marshalling the expanded value would bake a secret out of the Secret and
+// into the ConfigMap (or, worse, an on-disk config file) on the first admin save. Skips
+// expansions shorter than minEnvRefLen (already excluded when envRefs was built) — nothing further
+// to do here beyond the substitution itself.
+// Substitution runs longest-expanded-value-first. Go randomizes map iteration order, so if one
+// expanded value is a substring of another, iterating the map directly would make the output depend
+// on run-to-run ordering — the same Config could marshal two different ways, and the shorter value
+// could chew a hole in the longer one before it was ever matched. Longest-first is the standard
+// fix and makes the result deterministic.
+func (c *Config) MarshalForPersist() ([]byte, error) {
+	out, err := yaml.Marshal(c)
+	if err != nil {
+		return nil, fmt.Errorf("marshal config: %w", err)
+	}
+	expanded := make([]string, 0, len(c.envRefs))
+	for v := range c.envRefs {
+		expanded = append(expanded, v)
+	}
+	sort.Slice(expanded, func(i, j int) bool {
+		if len(expanded[i]) != len(expanded[j]) {
+			return len(expanded[i]) > len(expanded[j])
+		}
+		return expanded[i] < expanded[j] // stable tiebreak for equal-length values
+	})
+	for _, v := range expanded {
+		out = bytes.ReplaceAll(out, []byte(v), []byte(c.envRefs[v]))
+	}
+	return out, nil
+}
+
+// secretFields are the values that must never be written back as plaintext. Kept as one list so
+// adding a secret field to Config is a one-line change here rather than a silent omission.
+func (c *Config) secretFields() map[string]string {
+	return map[string]string{
+		"auth.session_secret": c.Auth.SessionSecret,
+		"alerts.webhook_url":  c.Alerts.WebhookURL,
+		"fleet.wifi_psk":      c.Fleet.WifiPSK,
+	}
+}
+
+// warnPlaintextSecrets logs when a secret field holds a literal rather than a ${VAR} reference.
+// The ${VAR} mechanism is opt-in per value and silent when unused, which is exactly how a plaintext
+// session_secret reached the live ConfigMap in the first place: nothing anywhere said "this is a
+// secret and you wrote it in the clear." A literal still works, so this warns rather than refusing —
+// but it now says so out loud, once, at startup.
+//
+// Values shorter than minEnvRefLen that DID come from the environment are still flagged, since
+// fromEnv records every expansion regardless of length. A secret that short is its own problem.
+func (c *Config) warnPlaintextSecrets(fromEnv map[string]bool) {
+	for name, val := range c.secretFields() {
+		if val == "" || fromEnv[val] {
+			continue
+		}
+		slog.Warn("secret is a literal in the config file, not a ${VAR} reference — it will be "+
+			"written back in plaintext on every admin save; move it to an env var/Secret and "+
+			"reference it instead", "field", name)
+	}
 }
 
 func (c *Config) applyDefaults() {
@@ -208,6 +421,40 @@ func (c *Config) applyDefaults() {
 	if c.Alerts.StaleAfter == 0 {
 		c.Alerts.StaleAfter = time.Hour
 	}
+	if c.Telemetry.Backend == "" {
+		c.Telemetry.Backend = "memory"
+	}
+	if c.Telemetry.SQLite.Path == "" {
+		c.Telemetry.SQLite.Path = "/var/lib/meeting-displays/telemetry.db"
+	}
+	if c.Telemetry.SQLite.RetentionDays == 0 {
+		c.Telemetry.SQLite.RetentionDays = 90
+	}
+	if c.Telemetry.SQLite.PruneInterval == 0 {
+		c.Telemetry.SQLite.PruneInterval = 6 * time.Hour
+	}
+	if c.Telemetry.SQLite.QueueSize == 0 {
+		c.Telemetry.SQLite.QueueSize = 256
+	}
+	if c.ConfigPersistence.Mode == "" {
+		c.ConfigPersistence.Mode = "auto"
+	}
+	// Pinned to a major version rather than "latest": an unattended upgrade of a third-party
+	// module that drives a flash tool is not something to discover mid-provisioning.
+	if c.Firmware.WebToolsURL == "" {
+		c.Firmware.WebToolsURL = "https://unpkg.com/esp-web-tools@10/dist/web/install-button.js"
+	}
+	// These three match today's hardcoded constants in internal/server/configwrite.go exactly, so
+	// an existing config.yaml that never mentions config_persistence behaves identically.
+	if c.ConfigPersistence.ConfigMap.Namespace == "" {
+		c.ConfigPersistence.ConfigMap.Namespace = "meeting-displays"
+	}
+	if c.ConfigPersistence.ConfigMap.Name == "" {
+		c.ConfigPersistence.ConfigMap.Name = "broker-config"
+	}
+	if c.ConfigPersistence.ConfigMap.Key == "" {
+		c.ConfigPersistence.ConfigMap.Key = "config.yaml"
+	}
 }
 
 // Validate checks the config for internal consistency. It's called once at Load time, and again
@@ -237,6 +484,9 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("room %q: wake_mode must be '', 'flat', or 'smart', got %q", r.DeviceID, *r.WakeMode)
 		}
 	}
+	if err := validateRoomLabels(c.Rooms); err != nil {
+		return err
+	}
 	if _, err := time.LoadLocation(c.Wake.Timezone); err != nil {
 		return fmt.Errorf("invalid timezone %q: %w", c.Wake.Timezone, err)
 	}
@@ -245,6 +495,12 @@ func (c *Config) Validate() error {
 	}
 	if !validWakeMode(c.Wake.Mode) {
 		return fmt.Errorf("wake.mode must be '', 'flat', or 'smart', got %q", c.Wake.Mode)
+	}
+	if !validTelemetryBackend(c.Telemetry.Backend) {
+		return fmt.Errorf("telemetry.backend must be '', 'memory', 'sqlite', or 'prometheus', got %q", c.Telemetry.Backend)
+	}
+	if !validConfigPersistenceMode(c.ConfigPersistence.Mode) {
+		return fmt.Errorf("config_persistence.mode must be '', 'auto', 'file', 'configmap', or 'none', got %q", c.ConfigPersistence.Mode)
 	}
 	if err := c.validateUsers(); err != nil {
 		return err
@@ -292,6 +548,42 @@ func (c *Config) validateUsers() error {
 func (c *Config) Location() *time.Location {
 	loc, _ := time.LoadLocation(c.Wake.Timezone)
 	return loc
+}
+
+// validateRoomLabels enforces Room.Label only where it actually matters: a room address served by
+// two or more displays. A single-display room may leave Label empty forever (and every config
+// written before multi-display support keeps loading unchanged); the moment a second panel is
+// added for the same address, both need a non-empty, distinct label, because otherwise /dashboard
+// and /status would show two identically-titled cards with no way to tell which physical panel is
+// stale or flat.
+//
+// Comparison is case-insensitive on both the room address (Google treats addresses that way) and
+// the label, so "Door" and "door" collide rather than producing two cards a human reads as one.
+func validateRoomLabels(rooms []Room) error {
+	byRoom := map[string][]Room{}
+	for _, r := range rooms {
+		key := strings.ToLower(r.Room)
+		byRoom[key] = append(byRoom[key], r)
+	}
+	for _, group := range byRoom {
+		if len(group) < 2 {
+			continue
+		}
+		seenLabel := map[string]string{} // lowercased label -> device_id that claimed it
+		for _, r := range group {
+			if r.Label == "" {
+				return fmt.Errorf("room %q is served by %d displays, so room %q needs a label "+
+					"(e.g. \"Door\", \"Interior wall\") to tell them apart", r.Room, len(group), r.DeviceID)
+			}
+			key := strings.ToLower(r.Label)
+			if other, dup := seenLabel[key]; dup {
+				return fmt.Errorf("rooms %q and %q both serve %q with the label %q; labels must be distinct",
+					other, r.DeviceID, r.Room, r.Label)
+			}
+			seenLabel[key] = r.DeviceID
+		}
+	}
+	return nil
 }
 
 // RoomByDeviceID finds a room's config by device ID — a linear scan is fine at fleet sizes this
@@ -399,6 +691,19 @@ func (c *Config) WithFirmware(f FirmwareConfig) (*Config, error) {
 	return next, nil
 }
 
+// WithFleetWifiSSID returns a deep copy of c with the fleet Wi-Fi SSID replaced, validated before
+// being returned. Only the SSID: the PSK is a secret sourced from ${MD_WIFI_PSK} and is never
+// settable from a web form, so this deliberately carries the existing WifiPSK forward untouched
+// rather than accepting one from a caller.
+func (c *Config) WithFleetWifiSSID(ssid string) (*Config, error) {
+	next := c.clone()
+	next.Fleet.WifiSSID = ssid
+	if err := next.Validate(); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
 // WithUser returns a deep copy of c with a user matching updated.Username (case-insensitive)
 // replaced, or appended if new, validated before being returned. This is the only way /admin's
 // Access panel grants or edits an employee's login — callers never touch c.Users directly.
@@ -454,7 +759,9 @@ func (c *Config) UserByUsername(username string) (User, bool) {
 // clone returns a shallow struct copy of c with Rooms and Users deep-copied into fresh slices, so
 // mutating the copy's slices (element replacement or append) never aliases the original's backing
 // array. Per-room pointer fields (WakeMode, FlatIntervalSeconds) are replaced wholesale by callers
-// above rather than mutated in place, so copying the pointers themselves is safe.
+// above rather than mutated in place, so copying the pointers themselves is safe. `next := *c`
+// already carries envRefs forward (a plain field copy of the map reference) — safe because envRefs
+// is written once by Load and never mutated afterward, only read by MarshalForPersist.
 func (c *Config) clone() *Config {
 	next := *c
 	next.Rooms = append([]Room(nil), c.Rooms...)
@@ -468,6 +775,18 @@ func validWakeMode(m string) bool {
 
 func validUserRole(r string) bool {
 	return r == "admin" || r == "manager" || r == "viewer"
+}
+
+// validTelemetryBackend treats "" as valid (same convention as validWakeMode above) — a bare
+// Config{} that hasn't been through applyDefaults yet (e.g. in tests, or mid-construction) is still
+// a legal value; applyDefaults is what turns "" into "memory" before the broker actually starts.
+func validTelemetryBackend(b string) bool {
+	return b == "" || b == "memory" || b == "sqlite" || b == "prometheus"
+}
+
+// validConfigPersistenceMode treats "" as valid for the same reason validTelemetryBackend does.
+func validConfigPersistenceMode(m string) bool {
+	return m == "" || m == "auto" || m == "file" || m == "configmap" || m == "none"
 }
 
 // wakeModeFor resolves the effective wake mode for a room: its own override if set, else the

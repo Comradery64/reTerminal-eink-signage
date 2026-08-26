@@ -13,8 +13,12 @@ import (
 
 // Device is one room's point-in-time health, derived from the latest telemetry report.
 type Device struct {
-	DeviceID          string `json:"device_id"`
-	Name              string `json:"name"`
+	DeviceID string `json:"device_id"`
+	Name     string `json:"name"`
+	// Label is the panel's position within a room ("Door", "Interior wall"), set only when a room
+	// has more than one display. Empty for the common single-display room. Callers rendering a
+	// heading should use Title(), which folds it into Name.
+	Label             string `json:"label,omitempty"`
 	BatteryPct        int    `json:"battery_pct"`
 	BatteryMV         int    `json:"battery_mv"`
 	LastSeenSeconds   int64  `json:"last_seen_seconds"`
@@ -26,6 +30,16 @@ type Device struct {
 	// thresholds notify.Manager alerts on (config.AlertConfig) so this view and the building-
 	// manager alert never disagree about the same device.
 	Status string `json:"status"`
+}
+
+// Title is the heading a human should see for this display: just the room name when the room has
+// one panel, "Room — Label" when it has several. Keeping this in one place means /status,
+// /dashboard, and any alert text can never disagree about how a second panel is named.
+func (d Device) Title() string {
+	if d.Label == "" {
+		return d.Name
+	}
+	return d.Name + " — " + d.Label
 }
 
 // LastRenderDisplay formats LastRenderSeconds for the human-readable /status page.
@@ -40,7 +54,7 @@ func (d Device) LastRenderDisplay() string {
 func Build(cfg *config.Config, tlm *telemetry.Store, now time.Time) []Device {
 	out := make([]Device, 0, len(cfg.Rooms))
 	for _, room := range cfg.Rooms {
-		d := Device{DeviceID: room.DeviceID, Name: room.Name}
+		d := Device{DeviceID: room.DeviceID, Name: room.Name, Label: room.Label}
 
 		snap, ok := tlm.Snapshot(room.DeviceID)
 		if !ok {

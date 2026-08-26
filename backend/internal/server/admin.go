@@ -23,6 +23,8 @@ func (s *Server) handleAdminPage(w http.ResponseWriter, r *http.Request) {
 		View:         admin.Build(cfg),
 		Error:        r.URL.Query().Get("error"),
 		SavedSection: r.URL.Query().Get("saved"),
+		PersistStrip: s.persistStrip(),
+		WebToolsURL:  template.URL(cfg.Firmware.WebToolsURL),
 	}
 	// Two-factor status is about the CURRENT session's own account, not something one admin sets
 	// for another — pulled straight from cfg, same as any other per-account field.
@@ -66,8 +68,22 @@ func (s *Server) handleAdminSaveRoom(w http.ResponseWriter, r *http.Request) {
 	}
 	existing, hasExisting := cfg.RoomByDeviceID(lookupID)
 
+	// Token precedence, most specific first:
+	//   token_sha256 — the provisioning wizard's path. It generates the device token server-side
+	//     (internal/nvs), writes the plaintext straight into the unit's NVS over USB, and sends
+	//     back only the hash, so no plaintext token ever crosses the network a second time.
+	//   token        — the manual/curl path, unchanged: plaintext in, hashed here.
+	//   existing     — neither supplied, so keep what the room already had. This fallback is what
+	//     stops an unrelated edit (fixing a typo in the name) from silently wiping the token; see
+	//     the doc comment above.
 	tokenHash := ""
-	if plaintext := r.PostForm.Get("token"); plaintext != "" {
+	if hashed := r.PostForm.Get("token_sha256"); hashed != "" {
+		if !isSHA256Hex(hashed) {
+			http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper("token_sha256 must be 64 lowercase hex characters"), http.StatusSeeOther)
+			return
+		}
+		tokenHash = hashed
+	} else if plaintext := r.PostForm.Get("token"); plaintext != "" {
 		sum := sha256.Sum256([]byte(plaintext))
 		tokenHash = hex.EncodeToString(sum[:])
 	} else if hasExisting {
@@ -92,10 +108,21 @@ func (s *Server) handleAdminSaveRoom(w http.ResponseWriter, r *http.Request) {
 		flatSeconds = &n
 	}
 
+	// Label follows the same keep-what-exists rule as the token and the wake overrides: the form
+	// omits it entirely for single-display rooms, and a resubmit that doesn't mention it must not
+	// clear the label off a panel that has one (which would then fail validation for its sibling
+	// too). An explicit empty submission still can't clear it here; remove the second display
+	// instead, which is the only case where clearing is correct.
+	label := r.PostForm.Get("label")
+	if label == "" && hasExisting {
+		label = existing.Label
+	}
+
 	room := config.Room{
 		DeviceID:            deviceID,
 		Name:                r.PostForm.Get("name"),
 		Room:                r.PostForm.Get("room"),
+		Label:               label,
 		TokenSHA256:         tokenHash,
 		WakeMode:            wakeMode,
 		FlatIntervalSeconds: flatSeconds,
@@ -113,7 +140,11 @@ func (s *Server) handleAdminSaveRoom(w http.ResponseWriter, r *http.Request) {
 			newCfg = withoutOld
 		}
 	}
-	s.applyConfig(newCfg, true) // tokens/names changed — rebuild derived caches
+	if err := s.applyConfig(r.Context(), newCfg, true); err != nil { // tokens/names changed — rebuild derived caches
+		s.log.Error("admin room save failed to persist", "device", deviceID, "err", err)
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#rooms", http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/admin?saved=rooms", http.StatusSeeOther)
 }
 
@@ -129,7 +160,11 @@ func (s *Server) handleAdminDeleteRoom(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error()), http.StatusSeeOther)
 		return
 	}
-	s.applyConfig(newCfg, true)
+	if err := s.applyConfig(r.Context(), newCfg, true); err != nil {
+		s.log.Error("admin room delete failed to persist", "device", deviceID, "err", err)
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#rooms", http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/admin?saved=rooms", http.StatusSeeOther)
 }
 
@@ -158,7 +193,11 @@ func (s *Server) handleAdminSaveWakeDefaults(w http.ResponseWriter, r *http.Requ
 		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error()), http.StatusSeeOther)
 		return
 	}
-	s.applyConfig(newCfg, false)
+	if err := s.applyConfig(r.Context(), newCfg, false); err != nil {
+		s.log.Error("admin wake defaults save failed to persist", "err", err)
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#wake", http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/admin?saved=wake", http.StatusSeeOther)
 }
 
@@ -180,8 +219,35 @@ func (s *Server) handleAdminSaveAlerts(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error()), http.StatusSeeOther)
 		return
 	}
-	s.applyConfig(newCfg, false)
+	if err := s.applyConfig(r.Context(), newCfg, false); err != nil {
+		s.log.Error("admin alerts save failed to persist", "err", err)
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#alerts", http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/admin?saved=alerts", http.StatusSeeOther)
+}
+
+// handleAdminSaveFleetWifi sets the fleet-wide Wi-Fi SSID used by the provisioning wizard. Only
+// the SSID — the PSK stays in the deployment's Secret / env (${MD_WIFI_PSK}) and has no form
+// field, because a fleet-wide credential readable from a web page is exactly what the wizard's
+// server-side image assembly exists to avoid.
+func (s *Server) handleAdminSaveFleetWifi(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	newCfg, err := s.cfg.Load().WithFleetWifiSSID(strings.TrimSpace(r.PostForm.Get("wifi_ssid")))
+	if err != nil {
+		s.log.Error("admin fleet wifi save rejected", "err", err)
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#add-device", http.StatusSeeOther)
+		return
+	}
+	if err := s.applyConfig(r.Context(), newCfg, false); err != nil {
+		s.log.Error("admin fleet wifi save failed to persist", "err", err)
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#add-device", http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/admin?saved=add-device#add-device", http.StatusSeeOther)
 }
 
 func (s *Server) handleAdminSaveFirmware(w http.ResponseWriter, r *http.Request) {
@@ -189,10 +255,14 @@ func (s *Server) handleAdminSaveFirmware(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
+	// WebToolsURL has no field on this form, so carry the existing value forward rather than
+	// letting a version/url/dir edit blank it — the same silent-wipe shape as the room-token bug
+	// fixed in 3c043ce. Blanking it would render an empty <script src> on the next page load.
 	fw := config.FirmwareConfig{
-		Version: r.PostForm.Get("version"),
-		URL:     r.PostForm.Get("url"),
-		Dir:     r.PostForm.Get("dir"),
+		Version:     r.PostForm.Get("version"),
+		URL:         r.PostForm.Get("url"),
+		Dir:         r.PostForm.Get("dir"),
+		WebToolsURL: s.cfg.Load().Firmware.WebToolsURL,
 	}
 	newCfg, err := s.cfg.Load().WithFirmware(fw)
 	if err != nil {
@@ -200,7 +270,11 @@ func (s *Server) handleAdminSaveFirmware(w http.ResponseWriter, r *http.Request)
 		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error()), http.StatusSeeOther)
 		return
 	}
-	s.applyConfig(newCfg, false)
+	if err := s.applyConfig(r.Context(), newCfg, false); err != nil {
+		s.log.Error("admin firmware save failed to persist", "err", err)
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#firmware", http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/admin?saved=firmware", http.StatusSeeOther)
 }
 
@@ -253,7 +327,11 @@ func (s *Server) handleAdminSaveUser(w http.ResponseWriter, r *http.Request) {
 			newCfg = withoutOld
 		}
 	}
-	s.applyConfig(newCfg, true) // login directory changed — rebuild it immediately
+	if err := s.applyConfig(r.Context(), newCfg, true); err != nil { // login directory changed — rebuild it immediately
+		s.log.Error("admin user save failed to persist", "username", username, "err", err)
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#access", http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/admin?saved=access", http.StatusSeeOther)
 }
 
@@ -277,7 +355,11 @@ func (s *Server) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#access", http.StatusSeeOther)
 		return
 	}
-	s.applyConfig(newCfg, true)
+	if err := s.applyConfig(r.Context(), newCfg, true); err != nil {
+		s.log.Error("admin user delete failed to persist", "username", username, "err", err)
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#access", http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/admin?saved=access", http.StatusSeeOther)
 }
 
@@ -368,7 +450,11 @@ func (s *Server) handleTOTPEnableSubmit(w http.ResponseWriter, r *http.Request) 
 		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#security", http.StatusSeeOther)
 		return
 	}
-	s.applyConfig(newCfg, true)
+	if err := s.applyConfig(r.Context(), newCfg, true); err != nil {
+		s.log.Error("2fa enable failed to persist", "username", sess.Username, "err", err)
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#security", http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/admin?saved=security#security", http.StatusSeeOther)
 }
 
@@ -396,7 +482,11 @@ func (s *Server) handleTOTPDisableSubmit(w http.ResponseWriter, r *http.Request)
 		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#security", http.StatusSeeOther)
 		return
 	}
-	s.applyConfig(newCfg, true)
+	if err := s.applyConfig(r.Context(), newCfg, true); err != nil {
+		s.log.Error("2fa disable failed to persist", "username", sess.Username, "err", err)
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#security", http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/admin?saved=security#security", http.StatusSeeOther)
 }
 
@@ -452,6 +542,22 @@ this account ({{.Username}}).</p>
 </html>
 `))
 
+// isSHA256Hex reports whether s is exactly 64 lowercase hex characters. Lowercase specifically:
+// config.Validate only checks the length, and everything that writes a hash (hex.EncodeToString
+// here, openssl in tools/provision_device.sh, internal/nvs) emits lowercase — accepting mixed case
+// would let the same token be stored two ways and compare unequal at device auth time.
+func isSHA256Hex(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 func formInt(r *http.Request, key string) int {
 	v, _ := strconv.Atoi(r.PostForm.Get(key))
 	return v
@@ -473,6 +579,10 @@ type adminPageData struct {
 	SavedSection string // e.g. "rooms" — which section to flash, empty on a plain page load
 	Username     string // current session's own account — 2FA is self-service, not admin-on-admin
 	TOTPEnabled  bool
+	PersistStrip persistStripView // standing config-persistence status, rendered on every page load
+	// WebToolsURL is the ESP Web Tools module the "Add a device" wizard loads (config
+	// firmware.web_tools_url). Rendered as a script src, never as page text.
+	WebToolsURL template.URL
 }
 
 var adminPageTmpl = template.Must(template.New("admin").Parse(`<!doctype html>
@@ -532,6 +642,7 @@ form button[type=submit]:not(.danger):not(.ghost) { margin-top: var(--space-4); 
 <a href="/dashboard">Dashboard</a>
 <a href="/manager">Manager</a>
 <a href="#rooms">Rooms</a>
+<a href="#add-device">Add a device</a>
 <a href="#access">Access</a>
 <a href="#security">Security</a>
 <a href="#wake">Wake defaults</a>
@@ -541,6 +652,7 @@ form button[type=submit]:not(.danger):not(.ghost) { margin-top: var(--space-4); 
 <form method="POST" action="/admin/logout"><button type="submit" class="ghost">Log out</button></form>
 </nav>
 <main class="main">
+<p class="banner {{.PersistStrip.Class}}" style="margin-left:0;margin-right:0">{{.PersistStrip.Message}}</p>
 {{if .Error}}<p class="banner banner-error" style="margin-left:0;margin-right:0">{{.Error}}</p>{{end}}
 
 <section class="section {{if eq .SavedSection "rooms"}}flash{{end}}" id="rooms">
@@ -549,7 +661,7 @@ form button[type=submit]:not(.danger):not(.ghost) { margin-top: var(--space-4); 
 <tr><th>Device</th><th>Name</th><th>Calendar</th><th>Wake override</th><th>Token</th><th></th></tr>
 {{range .View.Rooms}}
 <tr>
-<td class="mono">{{.DeviceID}}</td><td>{{.Name}}</td><td class="mono">{{.Room}}</td>
+<td class="mono">{{.DeviceID}}</td><td>{{.Name}}{{if .Label}} <span class="mono">— {{.Label}}</span>{{end}}</td><td class="mono">{{.Room}}</td>
 <td>{{if .WakeMode}}{{.WakeMode}} ({{.FlatIntervalSeconds}}s){{else}}fleet default{{end}}</td>
 <td>{{if .TokenConfigured}}configured{{else}}<em>none</em>{{end}}</td>
 <td><form method="POST" action="/admin/rooms/delete" style="display:inline">
@@ -566,6 +678,8 @@ form button[type=submit]:not(.danger):not(.ghost) { margin-top: var(--space-4); 
 <label for="r-device">Device ID</label><input id="r-device" type="text" name="device_id" required>
 <label for="r-name">Name</label><input id="r-name" type="text" name="name" required>
 <label for="r-room">Calendar (room email)</label><input id="r-room" type="text" name="room" required>
+<label for="r-label">Panel label (only for rooms with more than one display, e.g. "Door", "Interior wall")</label>
+<input id="r-label" type="text" name="label" placeholder="leave blank for a single-display room">
 <label for="r-token">Device token (leave blank to keep existing)</label><input id="r-token" type="text" name="token">
 <label for="r-wake">Wake override (leave unchanged to keep existing)</label>
 <select id="r-wake" name="wake_mode_override">
@@ -579,6 +693,65 @@ form button[type=submit]:not(.danger):not(.ghost) { margin-top: var(--space-4); 
 <button type="submit">Save room</button>
 </form>
 </details>
+</section>
+
+<section class="section {{if eq .SavedSection "add-device"}}flash{{end}}" id="add-device">
+<h2>Add a device</h2>
+<p>Flash a blank display over USB, straight from this page — no ESP-IDF, no terminal. Needs
+Chrome or Edge (Firefox and Safari have no WebSerial).</p>
+
+<div id="wiz-blocked" class="banner banner-error" hidden></div>
+
+<details class="surface add-room"{{if not .View.Fleet.WifiSSID}} open{{end}}>
+<summary>Fleet Wi-Fi &amp; firmware images</summary>
+<p class="hint">Every display joins the same network, so these are set once for the whole fleet
+rather than per device.</p>
+<form method="POST" action="/admin/fleet/save">
+<label for="fl-ssid">Fleet Wi-Fi SSID</label>
+<input id="fl-ssid" type="text" name="wifi_ssid" value="{{.View.Fleet.WifiSSID}}" placeholder="the network every display joins">
+<button type="submit">Save fleet Wi-Fi</button>
+</form>
+<p class="hint">
+Wi-Fi password: {{if .View.Fleet.WifiPSKConfigured}}<strong>configured</strong>{{else}}<strong>not set</strong>{{end}}.
+Not editable here by design — it is a fleet-wide secret, so it comes from the deployment's
+environment as <span class="mono">MD_WIFI_PSK</span> (the <span class="mono">wifi-psk</span> key of
+the <span class="mono">broker-secrets</span> Secret on k3s, or <span class="mono">broker.env</span> /
+<span class="mono">.env</span> on the other tiers).
+</p>
+<p class="hint">
+Firmware images: set <strong>Local serve directory</strong> in the
+<a href="#firmware">Firmware</a> section to a directory containing
+<span class="mono">bootloader.bin</span>, <span class="mono">partition-table.bin</span>,
+<span class="mono">ota_data_initial.bin</span>, and <span class="mono">meeting_display.bin</span>
+from <span class="mono">idf.py build</span>.
+</p>
+</details>
+
+<div id="wiz-body" hidden>
+<form id="wiz-form" onsubmit="return false">
+<label for="w-device">Device ID</label>
+<input id="w-device" type="text" required placeholder="e.g. rt-aspen-door">
+<label for="w-name">Room name</label>
+<input id="w-name" type="text" required placeholder="e.g. Aspen">
+<label for="w-room">Calendar (room email)</label>
+<input id="w-room" type="text" required placeholder="aspen@yourdomain.com">
+<label for="w-label">Panel label (only if this room has more than one display)</label>
+<input id="w-label" type="text" placeholder="e.g. Door">
+<button id="w-prepare" type="submit">Prepare this device</button>
+</form>
+
+<p id="wiz-status" class="banner" hidden></p>
+
+<div id="wiz-flash" hidden>
+<p>The room is saved and a one-time image is ready. Plug the display in over USB, then:</p>
+<esp-web-install-button id="wiz-install">
+<button slot="activate">Flash this display</button>
+<span slot="unsupported">This browser can't flash over USB — use Chrome or Edge.</span>
+<span slot="not-allowed">Flashing needs a secure (HTTPS) connection to this broker.</span>
+</esp-web-install-button>
+<p class="hint">The image expires in 15 minutes. If it lapses, press "Prepare this device" again.</p>
+</div>
+</div>
 </section>
 
 <section class="section {{if eq .SavedSection "access"}}flash{{end}}" id="access">
@@ -678,6 +851,99 @@ another admin's code, each account enrolls its own authenticator app.</p>
 </section>
 </main>
 </div>
+
+<script type="module" src="{{.WebToolsURL}}"></script>
+<script>
+// "Add a device" wizard. Deliberately thin: it never handles a credential. The broker mints the
+// NVS image server-side and hands back only a short-lived manifest URL, which ESP Web Tools
+// fetches same-origin under this admin session — so the device token and the fleet Wi-Fi PSK are
+// never JavaScript values and can't be read out of this page.
+(function () {
+  const blocked = document.getElementById('wiz-blocked');
+  const body = document.getElementById('wiz-body');
+  const status = document.getElementById('wiz-status');
+  const flashBox = document.getElementById('wiz-flash');
+  const installBtn = document.getElementById('wiz-install');
+  const prepareBtn = document.getElementById('w-prepare');
+
+  function say(message, isError) {
+    status.textContent = message;
+    status.className = 'banner ' + (isError ? 'banner-error' : 'banner-ok');
+    status.hidden = false;
+  }
+
+  // Preflight first: a missing fleet PSK or absent .bin files should be explained here, not
+  // discovered as a failure at the moment someone clicks Flash with a device in hand.
+  fetch('/admin/api/provision-preflight', { credentials: 'same-origin' })
+    .then(function (r) { return r.json(); })
+    .then(function (pre) {
+      if (pre.ready) { body.hidden = false; return; }
+      blocked.textContent = 'Device flashing is not available yet: ' + pre.issues.join(' ');
+      blocked.hidden = false;
+    })
+    .catch(function () {
+      blocked.textContent = 'Could not check whether device flashing is available.';
+      blocked.hidden = false;
+    });
+
+  document.getElementById('wiz-form').addEventListener('submit', function () {
+    const deviceID = document.getElementById('w-device').value.trim();
+    const name = document.getElementById('w-name').value.trim();
+    const room = document.getElementById('w-room').value.trim();
+    const label = document.getElementById('w-label').value.trim();
+    if (!deviceID || !name || !room) { say('Device ID, room name, and calendar address are all required.', true); return; }
+
+    prepareBtn.disabled = true;
+    flashBox.hidden = true;
+    say('Preparing…', false);
+
+    let tokenHash = '';
+    fetch('/admin/api/provision-nvs', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_id: deviceID })
+    })
+      .then(function (r) {
+        if (!r.ok) { return r.text().then(function (t) { throw new Error(t.trim()); }); }
+        return r.json();
+      })
+      .then(function (minted) {
+        tokenHash = minted.token_sha256;
+        installBtn.setAttribute('manifest', minted.manifest_url);
+
+        // Register the room BEFORE flashing. The token is already minted at this point, so if the
+        // browser dies mid-flash the broker still knows the hash and the unit can simply be
+        // reflashed; saving afterwards would instead strand a device holding a token nobody has.
+        const form = new URLSearchParams();
+        form.set('device_id', deviceID);
+        form.set('name', name);
+        form.set('room', room);
+        if (label) { form.set('label', label); }
+        form.set('token_sha256', tokenHash);
+        return fetch('/admin/rooms/save', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: form.toString()
+        });
+      })
+      .then(function (r) {
+        // rooms/save answers with a redirect carrying ?error= when validation rejects the room —
+        // most often a second panel in a room whose sibling has no label yet.
+        const dest = new URL(r.url, window.location.origin);
+        const err = dest.searchParams.get('error');
+        if (err) { throw new Error(err); }
+        flashBox.hidden = false;
+        say('Room saved and image ready. Plug in the display and press "Flash this display".', false);
+      })
+      .catch(function (e) {
+        say('Could not prepare this device: ' + e.message, true);
+      })
+      .finally(function () { prepareBtn.disabled = false; });
+  });
+})();
+</script>
 </body>
 </html>
 `))

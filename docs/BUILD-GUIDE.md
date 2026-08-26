@@ -106,10 +106,17 @@ existed (`gcloud`, `gam` via `gcloud cloud-shell ssh`), it was an order of magni
 
 ## Part 4 — The full guide (no AI required)
 
-Reproduces the whole system. Assumes: a Google Workspace org (super-admin access), a k3s cluster,
-`kubectl`, `docker`, Go ≥ 1.22, and ESP-IDF ≥ 5.2. Repo layout and deep detail live in
-`README.md`, `docs/RUNBOOK.md`, `docs/DEPLOY.md`, `docs/HARDWARE.md`, `docs/POWER.md`,
-`docs/SECURITY.md`. This section is the linear path.
+Reproduces the whole system. Assumes: a Google Workspace org (super-admin access), Go ≥ 1.24 (see
+`backend/go.mod` — the sqlite telemetry driver forces this floor), and ESP-IDF 5.5.x (see the pinned
+digest in `.github/workflows/firmware.yml`; `esp_driver_i2c` doesn't exist before 5.3, and 5.5 is
+what's actually verified). Steps 1–2 and 5–6 below are tier-agnostic.
+**Steps 3–4 are written for Tier 3 (k3s, `kubectl`, `docker` to build/push an image)** — that was
+this project's own deployment, but it is one of three supported tiers, not a requirement. If you
+don't already run Kubernetes, see **[docs/DEPLOY-TIERS.md](DEPLOY-TIERS.md)** for the Tier 1 (plain
+binary + systemd) or Tier 2 (container/compose) equivalent of Steps 3–4 — same broker binary, same
+config keys, no cluster. Repo layout and deep detail live in `README.md`, `docs/DEPLOY-TIERS.md`,
+`docs/GOOGLE-AUTH.md`, `docs/HARDWARE.md`, `docs/POWER.md`, `docs/SECURITY.md`. This section is the
+linear (Tier 3) path.
 
 ### Step 0 — Backend, locally (no cloud)
 ```bash
@@ -151,6 +158,10 @@ gam calendar <resourceEmail> add freebusy user rooms-broker@<broker-project>.iam
 (Repo helper: put the rooms in `tools/rooms.csv`; `tools/share_rooms.sh` does the discovery+share loop.)
 
 ### Step 3 — Keyless auth (Workload Identity Federation), uploaded-JWKS variant
+> **Tier 1/2 equivalent:** no kubelet to mint a token, so the broker mints its own via
+> `backend/tools/wiftoken` instead of `kubectl get --raw /openid/v1/jwks` below — same
+> uploaded-JWKS `gcloud` commands, different token source. Full runbook: **docs/GOOGLE-AUTH.md**.
+
 Because k3s's OIDC issuer is on-prem:
 ```bash
 ISSUER=$(kubectl get --raw /.well-known/openid-configuration | jq -r .issuer)
@@ -173,6 +184,11 @@ Put `POOL_ID=displays-pool`, `PROVIDER_ID=k3s`, the project number, and the SA e
 `broker-gcp-credconfig` external-account ConfigMap). No key file anywhere.
 
 ### Step 4 — Device tokens, image, TLS, deploy
+> **Tier 1/2 equivalent:** no image/`kubectl apply` — install the binary + `config.yaml` via
+> `backend/deploy/systemd/README.md` (Tier 1) or `docker compose up` via
+> `backend/deploy/compose/README.md` (Tier 2). Device tokens and TLS are the same either way; only
+> the "how does the config/binary get onto the host" step differs. See **docs/DEPLOY-TIERS.md**.
+
 ```bash
 # per-device bearer tokens (broker stores only the SHA-256):
 ./tools/provision_all.sh tools/rooms.csv      # -> provisioning/{rooms.snippet.yaml, device-tokens.txt}

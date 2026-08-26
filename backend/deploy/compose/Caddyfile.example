@@ -1,0 +1,19 @@
+# Copy to Caddyfile, edit the host, and run `docker compose --profile tls up -d`.
+#
+# Deliberately not a bare "/" catch-all: only device-facing paths plus the authenticated /admin
+# and /manager UIs (cookie-session-gated — see internal/server/login.go) are proxied here.
+# /metrics, /status, and /api/v1/status are NEVER added to this file — same trust boundary
+# docs/DASHBOARD.md defines for the k3s Ingress (backend/deploy/k3s/broker.yaml.example). Reach
+# them via `docker compose exec broker` is not possible (distroless, no shell) — use
+# `curl http://localhost:8080/...` from the host instead, since :8080 is already published there.
+displays.example.internal {
+	tls internal   # or `tls you@example.com` for a real ACME cert if this host has a public DNS name
+
+	@app path /api/v1/display* /api/v1/telemetry* /firmware* /assets* /admin* /manager* /dashboard* /healthz
+	handle @app {
+		reverse_proxy broker:8080
+	}
+	handle {
+		respond 404
+	}
+}

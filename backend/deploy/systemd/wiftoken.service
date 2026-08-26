@@ -1,0 +1,42 @@
+[Unit]
+Description=Mint one on-prem OIDC token for keyless Google Calendar WIF auth (see docs/GOOGLE-AUTH.md)
+Documentation=https://github.com/Comradery64/reTerminal-eink-signage
+# Not a hard dependency of the broker unit: the broker tolerates a stale/missing token file the
+# same way it tolerates any transient Calendar API failure (poller retries on its own interval).
+# Keeping these two units independent means a wiftoken misconfiguration degrades Calendar freshness
+# rather than taking the whole display fleet's serving path down.
+After=network-online.target
+
+[Service]
+# Oneshot: mint exactly one token and exit. wiftoken.timer (not -interval) drives the cadence, so
+# `systemctl status wiftoken.service` always reflects the outcome of the most recent mint attempt
+# — a long-running -interval process would instead report "active (running)" forever regardless
+# of whether the last mint actually succeeded, which is a worse operator signal.
+Type=oneshot
+User=meeting-displays
+Group=meeting-displays
+EnvironmentFile=-/etc/meeting-displays/broker.env
+# -sub and -aud must match what was passed to `gcloud iam workload-identity-pools providers
+# create-oidc` and the attribute-condition — see docs/GOOGLE-AUTH.md for the full one-time setup.
+ExecStart=/usr/local/bin/wiftoken \
+  -key /etc/meeting-displays/gcp/wiftoken.key \
+  -out /var/lib/meeting-displays/gcp/token \
+  -iss https://displays.example.internal/oidc \
+  -sub broker \
+  -aud //iam.googleapis.com/projects/000000000000/locations/global/workloadIdentityPools/displays-pool/providers/onprem \
+  -ttl 1h
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+MemoryDenyWriteExecute=yes
+# Only the token output path needs to be writable; the signing key directory is read-only here on
+# purpose — this unit mints tokens, it does not rotate keys (rotation is a separate, human-run
+# runbook step in docs/GOOGLE-AUTH.md, specifically so a compromised token-minting path can't also
+# rewrite the signing key).
+ReadWritePaths=/var/lib/meeting-displays/gcp

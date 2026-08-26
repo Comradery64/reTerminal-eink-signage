@@ -1,0 +1,51 @@
+name: firmware
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "firmware/**"
+  pull_request:
+    paths:
+      - "firmware/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firmware-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Pinned by digest, not the release-v5.5 tag: the tag is mutable upstream, and the firmware
+    # actually requires 5.5.x specifically (wpa_supplicant absorbed the EAP-client component in
+    # 5.5, and esp_driver_i2c is a hard component split that release-v5.2 does not have — both
+    # verified by running this build against 5.2 and 5.5 directly before wiring up this job).
+    container: espressif/idf@sha256:0c439ea923cd42700f9bbbe82542749d980712edb0ead0ea6db7eef35619b812
+    defaults:
+      run:
+        working-directory: firmware
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # firmware/main/certs/broker_ca.pem is intentionally not committed (see
+      # firmware/main/certs/README.md) — every real deployment pins its own broker CA root, and
+      # the firmware fail-closed refuses any cert not signed by it. CI has no real broker to trust
+      # and doesn't need one: it only needs to prove the source compiles and links, so it drops in
+      # a throwaway self-signed placeholder purely to satisfy the EMBED_TXTFILES build input.
+      - name: generate placeholder broker CA for build
+        run: |
+          openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout /tmp/ci-placeholder.key \
+            -out main/certs/broker_ca.pem \
+            -days 1 -subj "/CN=ci-placeholder"
+
+      # sdkconfig.defaults has every CONFIG_SECURE_BOOT*/CONFIG_SECURE_FLASH_ENC* line commented
+      # out, so this unattended build needs no signing key and no secrets — verified locally
+      # before making this a required (non-workflow_dispatch, non-continue-on-error) check.
+      - name: build
+        run: |
+          idf.py set-target esp32s3
+          idf.py build

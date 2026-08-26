@@ -1,8 +1,12 @@
 package config
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -394,6 +398,106 @@ func TestWithWakeAlertsFirmware(t *testing.T) {
 	}
 }
 
+// TestApplyDefaultsTelemetryAndConfigPersistence pins today's-behavior-unchanged defaults: an
+// existing config.yaml that never mentions telemetry: or config_persistence: must resolve to
+// exactly these values (memory telemetry, auto persistence, the configmap coordinates that used to
+// be hardcoded constants in internal/server/configwrite.go).
+func TestApplyDefaultsTelemetryAndConfigPersistence(t *testing.T) {
+	c := validBase()
+	c.applyDefaults()
+
+	if c.Telemetry.Backend != "memory" {
+		t.Errorf("telemetry.backend default = %q, want memory", c.Telemetry.Backend)
+	}
+	if c.Telemetry.SQLite.Path != "/var/lib/meeting-displays/telemetry.db" {
+		t.Errorf("telemetry.sqlite.path default = %q", c.Telemetry.SQLite.Path)
+	}
+	if c.Telemetry.SQLite.RetentionDays != 90 {
+		t.Errorf("telemetry.sqlite.retention_days default = %d, want 90", c.Telemetry.SQLite.RetentionDays)
+	}
+	if c.Telemetry.SQLite.PruneInterval != 6*time.Hour {
+		t.Errorf("telemetry.sqlite.prune_interval default = %v, want 6h", c.Telemetry.SQLite.PruneInterval)
+	}
+	if c.Telemetry.SQLite.QueueSize != 256 {
+		t.Errorf("telemetry.sqlite.queue_size default = %d, want 256", c.Telemetry.SQLite.QueueSize)
+	}
+	if c.ConfigPersistence.Mode != "auto" {
+		t.Errorf("config_persistence.mode default = %q, want auto", c.ConfigPersistence.Mode)
+	}
+	cm := c.ConfigPersistence.ConfigMap
+	if cm.Namespace != "meeting-displays" || cm.Name != "broker-config" || cm.Key != "config.yaml" {
+		t.Errorf("config_persistence.configmap defaults = %+v, want today's hardcoded values", cm)
+	}
+}
+
+func TestValidateRejectsUnknownTelemetryBackendAndPersistenceMode(t *testing.T) {
+	c := validBase()
+	c.Telemetry.Backend = "bogus"
+	if err := c.Validate(); err == nil {
+		t.Fatal("unknown telemetry.backend must be rejected")
+	}
+
+	c = validBase()
+	c.ConfigPersistence.Mode = "bogus"
+	if err := c.Validate(); err == nil {
+		t.Fatal("unknown config_persistence.mode must be rejected")
+	}
+}
+
+// TestMarshalForPersistRestoresEnvRefs guards the live secret leak this change fixes: Load expands
+// ${VAR} for in-memory use, but writing that expanded value back out (to a ConfigMap, or now to a
+// plain file) would copy a secret out of wherever it was actually provisioned. MarshalForPersist
+// must restore the ${VAR} token instead.
+func TestMarshalForPersistRestoresEnvRefs(t *testing.T) {
+	const secretEnvVar = "TEST_SESSION_SECRET_FOR_MARSHAL_ROUNDTRIP"
+	secret := strings.Repeat("s3cr3t-", 6) // well over the 8-byte floor, never printed
+	t.Setenv(secretEnvVar, secret)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	yamlContent := `
+provider: demo
+rooms:
+  - device_id: rt-1
+    room: a@x
+    token_sha256: ` + hashOf64("t") + `
+wake:
+  timezone: UTC
+auth:
+  session_secret: "${` + secretEnvVar + `}"
+`
+	if err := os.WriteFile(path, []byte(yamlContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Auth.SessionSecret != secret {
+		t.Fatal("the expanded secret must be usable in memory")
+	}
+
+	// Apply a normal admin-style edit — MarshalForPersist must still restore the token afterward,
+	// since clone() carries envRefs forward.
+	updated, err := c.WithRoom(Room{DeviceID: "rt-1", Room: "a@x", TokenSHA256: c.Rooms[0].TokenSHA256, Name: "renamed"})
+	if err != nil {
+		t.Fatalf("WithRoom: %v", err)
+	}
+
+	out, err := updated.MarshalForPersist()
+	if err != nil {
+		t.Fatalf("MarshalForPersist: %v", err)
+	}
+	outStr := string(out)
+	if strings.Contains(outStr, secret) {
+		t.Fatal("MarshalForPersist must never write the expanded secret out")
+	}
+	if !strings.Contains(outStr, "${"+secretEnvVar+"}") {
+		t.Fatalf("MarshalForPersist must restore the ${VAR} token; got:\n%s", outStr)
+	}
+}
+
 func TestPerRoomWakeModeOverride(t *testing.T) {
 	c := smartConfig() // fleet default is smart
 	loc := c.Location()
@@ -408,5 +512,207 @@ func TestPerRoomWakeModeOverride(t *testing.T) {
 	want := c.flatWakeSeconds(room, now)
 	if got != want {
 		t.Fatalf("room override to flat: want %d (flat grid), got %d", want, got)
+	}
+}
+
+// A room may legitimately have several displays (a door plaque plus an interior panel), so
+// duplicate room addresses must stay valid — but only when Label tells them apart, because
+// otherwise /dashboard and /status would show indistinguishable cards for two physical devices.
+func TestValidateMultipleDisplaysPerRoom(t *testing.T) {
+	sum := sha256.Sum256([]byte("test-token"))
+	hash := hex.EncodeToString(sum[:])
+	room := func(id, addr, label string) Room {
+		return Room{DeviceID: id, Name: "Aspen", Room: addr, Label: label, TokenSHA256: hash}
+	}
+
+	tests := []struct {
+		name    string
+		rooms   []Room
+		wantErr string
+	}{
+		{
+			name:  "single display needs no label",
+			rooms: []Room{room("rt-1", "a@x", "")},
+		},
+		{
+			name:  "distinct rooms need no labels",
+			rooms: []Room{room("rt-1", "a@x", ""), room("rt-2", "b@x", "")},
+		},
+		{
+			name:  "two displays in one room, both labelled",
+			rooms: []Room{room("rt-1", "a@x", "Door"), room("rt-2", "a@x", "Interior wall")},
+		},
+		{
+			name:    "two displays in one room, one unlabelled",
+			rooms:   []Room{room("rt-1", "a@x", "Door"), room("rt-2", "a@x", "")},
+			wantErr: "needs a label",
+		},
+		{
+			name:    "two displays in one room, neither labelled",
+			rooms:   []Room{room("rt-1", "a@x", ""), room("rt-2", "a@x", "")},
+			wantErr: "needs a label",
+		},
+		{
+			name:    "duplicate labels within a room",
+			rooms:   []Room{room("rt-1", "a@x", "Door"), room("rt-2", "a@x", "Door")},
+			wantErr: "must be distinct",
+		},
+		{
+			name:    "labels differing only by case still collide",
+			rooms:   []Room{room("rt-1", "a@x", "Door"), room("rt-2", "a@x", "door")},
+			wantErr: "must be distinct",
+		},
+		{
+			name:    "room addresses differing only by case are the same room",
+			rooms:   []Room{room("rt-1", "a@x", "Door"), room("rt-2", "A@X", "")},
+			wantErr: "needs a label",
+		},
+		{
+			name:  "the same label in different rooms is fine",
+			rooms: []Room{room("rt-1", "a@x", "Door"), room("rt-2", "a@x", "Wall"), room("rt-3", "b@x", "Door")},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validBase()
+			c.Rooms = tc.rooms
+			err := c.Validate()
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Fatalf("want valid, got error: %v", err)
+			case tc.wantErr != "" && err == nil:
+				t.Fatalf("want an error containing %q, got nil", tc.wantErr)
+			case tc.wantErr != "" && !strings.Contains(err.Error(), tc.wantErr):
+				t.Fatalf("error %q does not contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestMarshalForPersistRestoresFleetWifiPSK covers the exact path /admin's "Save fleet Wi-Fi"
+// button takes. WithFleetWifiSSID edits the same Fleet struct that holds the PSK, so if clone()
+// ever stopped carrying envRefs forward, the first SSID save would write the expanded fleet-wide
+// Wi-Fi password straight into the ConfigMap — reintroducing precisely the leak that keeping the
+// PSK server-side exists to prevent.
+func TestMarshalForPersistRestoresFleetWifiPSK(t *testing.T) {
+	const pskEnvVar = "TEST_FLEET_PSK_FOR_MARSHAL_ROUNDTRIP"
+	psk := strings.Repeat("wifi-pw-", 4) // well over the 8-byte floor, never printed
+	t.Setenv(pskEnvVar, psk)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	yamlContent := `
+provider: demo
+rooms:
+  - device_id: rt-1
+    room: a@x
+    token_sha256: ` + hashOf64("t") + `
+wake:
+  timezone: UTC
+fleet:
+  wifi_ssid: "Old_SSID"
+  wifi_psk: "${` + pskEnvVar + `}"
+`
+	if err := os.WriteFile(path, []byte(yamlContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Fleet.WifiPSK != psk {
+		t.Fatal("the expanded PSK must be usable in memory, or the wizard can't build an NVS image")
+	}
+
+	updated, err := c.WithFleetWifiSSID("New_SSID")
+	if err != nil {
+		t.Fatalf("WithFleetWifiSSID: %v", err)
+	}
+	if updated.Fleet.WifiSSID != "New_SSID" {
+		t.Fatalf("SSID not applied: %q", updated.Fleet.WifiSSID)
+	}
+	if updated.Fleet.WifiPSK != psk {
+		t.Fatal("editing the SSID must not disturb the PSK")
+	}
+
+	out, err := updated.MarshalForPersist()
+	if err != nil {
+		t.Fatalf("MarshalForPersist: %v", err)
+	}
+	outStr := string(out)
+	if strings.Contains(outStr, psk) {
+		t.Fatal("MarshalForPersist must never write the expanded fleet Wi-Fi PSK out")
+	}
+	if !strings.Contains(outStr, "${"+pskEnvVar+"}") {
+		t.Fatal("MarshalForPersist must restore the ${VAR} token for the fleet PSK")
+	}
+	if !strings.Contains(outStr, "New_SSID") {
+		t.Fatal("the SSID is not a secret and must persist as a literal")
+	}
+}
+
+// TestLoadRejectsDanglingEnvRef guards the bug that already fired in production: a ${VAR} whose
+// variable is unset used to expand to "", which recorded no envRef, so the first admin save wrote
+// "" over the ${VAR} in the ConfigMap — destroying the reference permanently and silently. Load
+// must refuse to start instead, naming the variable.
+func TestLoadRejectsDanglingEnvRef(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	yml := "listen: \":8080\"\nprovider: \"demo\"\nalerts:\n  webhook_url: \"${DEFINITELY_UNSET_VAR_XYZ}\"\n"
+	if err := os.WriteFile(path, []byte(yml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	os.Unsetenv("DEFINITELY_UNSET_VAR_XYZ")
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load must refuse a config whose ${VAR} is unset; a silent empty value destroys the reference on first save")
+	}
+	if !strings.Contains(err.Error(), "DEFINITELY_UNSET_VAR_XYZ") {
+		t.Fatalf("error must name the offending variable so it is diagnosable; got: %v", err)
+	}
+}
+
+// TestLoadIgnoresEnvRefsInComments: the ${VAR} regex runs over raw bytes, and this project's own
+// config files document the mechanism in their comments. A config must never be unstartable because
+// of its own documentation.
+func TestLoadIgnoresEnvRefsInComments(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	yml := "listen: \":8080\"\nprovider: \"demo\"\n# in production write \"${SOME_UNSET_DOC_VAR}\" here\nalerts:\n  webhook_url: \"\"\nrooms:\n  - device_id: \"rt-a\"\n    name: \"A\"\n    room: \"a@example.com\"\n    token_sha256: \"" + strings.Repeat("a", 64) + "\"\n"
+	if err := os.WriteFile(path, []byte(yml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	os.Unsetenv("SOME_UNSET_DOC_VAR")
+	if _, err := Load(path); err != nil {
+		t.Fatalf("a ${VAR} mentioned only in a comment must not block startup: %v", err)
+	}
+}
+
+// TestMarshalForPersistIsDeterministic pins BUG 2: envRefs is a map, and Go randomizes map
+// iteration, so when one expanded value is a substring of another the output could differ run to
+// run. Substitution must be longest-value-first.
+func TestMarshalForPersistIsDeterministic(t *testing.T) {
+	c := &Config{envRefs: map[string]string{
+		"supersecretvalue":      "${LONG_VAR}",
+		"supersecretvalue-more": "${LONGER_VAR}",
+	}}
+	c.Auth.SessionSecret = "supersecretvalue-more"
+	first, err := c.MarshalForPersist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 50; i++ {
+		again, err := c.MarshalForPersist()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(first, again) {
+			t.Fatalf("MarshalForPersist must be deterministic; iteration %d differed:\n%s\nvs\n%s", i, first, again)
+		}
+	}
+	if !strings.Contains(string(first), "${LONGER_VAR}") {
+		t.Fatalf("longest expanded value must win; got:\n%s", first)
 	}
 }

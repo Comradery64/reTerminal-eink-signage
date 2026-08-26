@@ -3,12 +3,14 @@ package server
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,7 +54,7 @@ func testServerWithAuth(t *testing.T) *Server {
 	cfg.Alerts = config.AlertConfig{LowBatteryPct: 45, ClearPct: 55, MinRenotify: 24 * time.Hour, StaleAfter: time.Hour}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	alerts := notify.NewManager("", 45, 55, 24*time.Hour, log)
-	return New(config.NewLive(cfg), cache.New(), telemetry.New(), alerts, log)
+	return New(config.NewLive(cfg), cache.New(), telemetry.New(), alerts, noopPersistStore{}, log)
 }
 
 func TestRequireRoleRedirectsWithoutCookie(t *testing.T) {
@@ -270,9 +272,9 @@ func TestLoginAtAnyDoorReachesEveryDoorTheRoleSatisfies(t *testing.T) {
 
 	cases := []struct {
 		username, password string
-		loginPath           string
-		wantReachable       []string
-		wantBlocked         []string
+		loginPath          string
+		wantReachable      []string
+		wantBlocked        []string
 	}{
 		{testAdminUsername, testAdminPassword, adminUI.loginPath, []string{"/dashboard", "/manager", "/admin"}, nil},
 		{testManagerUsername, testManagerPassword, managerUI.loginPath, []string{"/dashboard", "/manager"}, []string{"/admin"}},
@@ -335,5 +337,76 @@ func TestLogoutFromAnyDoorInvalidatesAllDoors(t *testing.T) {
 		if page, err := client.Get(srv.URL + path); err != nil || page.StatusCode == http.StatusOK {
 			t.Fatalf("post-logout GET %s should be blocked: err=%v code=%v", path, err, page)
 		}
+	}
+}
+
+// TestForcedPasswordChangeAppliesInMemoryWhenPersistFails reproduces today's live production
+// failure mode: the durable persist backend (e.g. a 403'ing ConfigMap PATCH) is down while an
+// account with an admin-set temporary password tries to satisfy MustChangePassword. Before this
+// fix, a failed applyConfig here left the account fail-closed and permanently stuck on
+// /manager/change-password (requireRole bounces every other path back to it — see requireRole
+// above), showing a false generic "passwords must match" reason instead of the real 403 — a
+// regression in both availability and in "stop lying to the human". The fix: apply the new
+// password in memory anyway (mirroring what config_persistence.mode=none already promises
+// elsewhere in this UI) so the account isn't locked out, while the standing persistence strip on
+// every subsequent page still tells the truth about the failed write.
+func TestForcedPasswordChangeAppliesInMemoryWhenPersistFails(t *testing.T) {
+	s := testServerWithAuth(t)
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+	adminClient := loggedInAdminClient(t, srv)
+
+	if _, err := adminClient.PostForm(srv.URL+"/admin/access/save", url.Values{
+		"username": {"newmanager"}, "password": {"temp-pw"}, "role": {"manager"},
+		"force_password_change": {"on"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	jar, _ := cookiejar.New(nil)
+	client := srv.Client()
+	client.Jar = jar
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }
+	if _, err := client.PostForm(srv.URL+"/manager/login", url.Values{"username": {"newmanager"}, "password": {"temp-pw"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate today's live production failure starting mid-session: the durable backend begins
+	// rejecting writes with a 403 right as this account tries to change its temporary password.
+	s.persist = failingPersistStore{err: errors.New("403 Forbidden")}
+
+	resp, err := client.PostForm(srv.URL+"/manager/change-password", url.Values{
+		"password": {"my-own-pw"}, "password_confirm": {"my-own-pw"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("change-password with a failing persist store: want 303, got %d", resp.StatusCode)
+	}
+	// Must NOT be bounced back to change-password — that would be the permanent lockout this test
+	// guards against (requireRole would otherwise block every other page forever).
+	if got := resp.Header.Get("Location"); got != "/dashboard" {
+		t.Fatalf("change-password with a failing persist store: want redirect to /dashboard, got %q (locked out)", got)
+	}
+
+	updated, ok := s.cfg.Load().UserByUsername("newmanager")
+	if !ok || updated.MustChangePassword {
+		t.Fatalf("MustChangePassword must clear in memory even when the durable persist fails: %+v", updated)
+	}
+	if page, err := client.Get(srv.URL + "/manager"); err != nil || page.StatusCode != http.StatusOK {
+		t.Fatalf("GET /manager after in-memory-only change: err=%v code=%v", err, page)
+	}
+
+	// The persistence strip must tell the truth about the failed write on the very next page —
+	// nobody is told a false "saved", per the design's core requirement.
+	page, err := client.Get(srv.URL + "/manager")
+	if err != nil || page.StatusCode != http.StatusOK {
+		t.Fatalf("GET /manager: err=%v code=%v", err, page)
+	}
+	body, _ := io.ReadAll(page.Body)
+	page.Body.Close()
+	if !strings.Contains(string(body), "LAST SAVE FAILED") || !strings.Contains(string(body), "403 Forbidden") {
+		t.Fatalf("manager page must surface the real persist failure in its persistence strip, got:\n%s", body)
 	}
 }

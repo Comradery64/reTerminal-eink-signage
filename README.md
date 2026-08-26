@@ -7,12 +7,14 @@ E Ink **Spectra 6** color e-paper) showing live conference-room availability pul
 > **New here? Start with [docs/BUILD-GUIDE.md](docs/BUILD-GUIDE.md)** — the honest write-up of
 > how this was built, the dead-ends hit along the way, and a step-by-step guide to reproduce it.
 
-The design target is **≥ 3 months on battery** per wall-mounted unit, served by a single
-Go broker running on Kubernetes (developed against k3s).
+The design target is **≥ 3 months on battery** per wall-mounted unit, served by a single static
+Go binary — on plain systemd, in a container, or on Kubernetes, your choice (see
+[docs/DEPLOY-TIERS.md](docs/DEPLOY-TIERS.md); developed against k3s for the Kubernetes path, but
+that's one of three supported tiers, not a requirement).
 
 ```
 ┌──────────────────┐         poll (2 min)            ┌───────────────────────────────┐
-│ Google Calendar  │ ◀─────────────────────────────▶ │   broker (Go, on k3s)         │
+│ Google Calendar  │ ◀─────────────────────────────▶ │   broker (Go binary)          │
 │ (room resources) │                                 │  ┌─────────────────────────┐  │
 └──────────────────┘                                 │  │ poller  → calendar svc  │  │
                                                      │  │ render  → Spectra6 4bpp │  │
@@ -31,7 +33,7 @@ Go broker running on Kubernetes (developed against k3s).
 | **Server-side content hash + HTTP 304** | A full Spectra 6 refresh is the largest single energy draw in the whole wake cycle (~12–30 s of active panel current). The device sends its last ETag as `If-None-Match`; if the room's schedule pixels are unchanged the broker returns `304` and the device sleeps **without powering the panel**. Most 10-minute wakes cost ~1–2 s of radio only. |
 | **BSSID/channel cache in NVS** | Skips the 1.5–2.5 s active scan on every wake. |
 | **TLS session resumption (tickets)** | Avoids a full ECDHE handshake (and its radio-on time) on every wake. |
-| **Go broker** | Single static binary, trivial k8s/k3s deploy, excellent concurrency for fan-out polling of many rooms + serving many low-rate clients. |
+| **Go broker** | Single static binary — systemd, Docker, or Kubernetes, deploy however your infrastructure already looks (see [docs/DEPLOY-TIERS.md](docs/DEPLOY-TIERS.md)) — with excellent concurrency for fan-out polling of many rooms + serving many low-rate clients. |
 
 See **[PROTOCOL.md](PROTOCOL.md)** for the wire contract and **[docs/POWER.md](docs/POWER.md)**
 for the battery budget that justifies the 3-month claim.
@@ -42,22 +44,36 @@ for the battery budget that justifies the 3-month claim.
 backend/    Go broker: calendar integration, Spectra6 renderer, cache, HTTP, telemetry
 firmware/   ESP-IDF (C++) firmware: deep-sleep state machine, fast Wi-Fi, TLS, EPD driver
 tools/      Device provisioning (token + secure-boot/flash-encryption helpers)
-docs/       Build guide, hardware reference, power budget, security notes, fleet dashboard plan
+docs/       Build guide, deploy tiers, hardware reference, power budget, security notes, fleet dashboard plan
 ```
 
 ## Quick start
 
 ```bash
-# Backend
-cd backend && go build ./... && ./broker -config ./config.example.yaml
-# (production deploy to Kubernetes) follow docs/BUILD-GUIDE.md; example manifests are the
-# backend/deploy/k3s/*.yaml.example files — copy, fill in your own values, drop the .example suffix.
+# Backend — runs immediately: fake schedule, no calendar, credentials, or hardware needed.
+cd backend && go build ./...
+./broker -demo -config ./config.demo.yaml       # serves on :8080
+
+# In another shell — fetch a real rendered frame for the demo room:
+TOKEN=demo-token ../tools/fake_device.sh display
+
+# config.example.yaml is the TEMPLATE for a real deployment, not a runnable config: copy it,
+# then fill in your own room calendar addresses and device token hashes
+# (tools/provision_all.sh generates both). As shipped it refuses to start, by design —
+# token_sha256 is the placeholder REPLACE_WITH_SHA256_OF_DEVICE_TOKEN.
+
+# Production deploy: pick a tier and follow its runbook — see docs/DEPLOY-TIERS.md.
+#   Tier 1 (plain binary + systemd, no cluster):  backend/deploy/systemd/README.md
+#   Tier 2 (container / compose):                 backend/deploy/compose/README.md
+#   Tier 3 (Kubernetes/k3s):                       backend/deploy/k3s/*.yaml.example — copy, fill
+#                                                  in your own values, drop the .example suffix.
 
 # Preview the rendered room layout to PNG — no hardware/calendar/broker needed:
-go run ./cmd/preview               # writes preview-available.png / -inuse.png / -soon.png
+go run ./cmd/preview               # writes preview-{available,inuse,soon,nextday,backtoback}.png
 
-# Simulate a device against a running broker (test payloads + battery alerts):
-TOKEN=<raw-token> ../tools/fake_device.sh battery-demo
+# Simulate a device against a running broker (test payloads + battery alerts).
+# Against the demo broker above the token is "demo-token"; against a real one, that device's token:
+TOKEN=demo-token ../tools/fake_device.sh battery-demo
 
 # Firmware
 cd firmware

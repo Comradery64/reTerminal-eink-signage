@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -101,6 +102,20 @@ func (s *Server) handleDashboardPage(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, row)
 	}
 
+	// Sort by room name, then panel label, so a room's several displays always sit next to each
+	// other on the grid instead of wherever their config entries happened to land. DeviceID is the
+	// final tiebreak purely so the order is stable across reloads.
+	sort.Slice(rows, func(i, j int) bool {
+		a, b := rows[i], rows[j]
+		if a.Name != b.Name {
+			return a.Name < b.Name
+		}
+		if a.Label != b.Label {
+			return a.Label < b.Label
+		}
+		return a.DeviceID < b.DeviceID
+	})
+
 	view := dashboardPageView{Rows: rows}
 	// Re-derive the role from the same cookie requireRole(viewerUI, ...) already validated to
 	// reach this handler at all — a fresh lookup here, rather than threading session state through
@@ -145,6 +160,9 @@ var dashboardPageTmpl = template.Must(template.New("dashboard").Parse(`<!doctype
 .checkin { margin: 0 0 var(--space-3); font-family: var(--font-mono); font-size: var(--text-sm); color: var(--ink-soft); }
 .checkin p { margin: 0; }
 .checkin-label { font-weight: 600; color: var(--ink); }
+/* Only rendered for rooms with more than one panel, so a single-display fleet looks unchanged. */
+.panel-label { display: inline-block; margin: 0 0 var(--space-2); padding: 2px 8px; border: 1px solid var(--line);
+  border-radius: var(--radius); font-family: var(--font-mono); font-size: var(--text-sm); color: var(--ink-soft); }
 </style>
 </head>
 <body>
@@ -161,12 +179,13 @@ var dashboardPageTmpl = template.Must(template.New("dashboard").Parse(`<!doctype
 <div class="card surface">
 <span class="chip chip-{{.Status}}">{{.StatusLabel}}</span>
 <h2>{{.Name}}</h2>
+{{if .Label}}<span class="panel-label">{{.Label}}</span>{{end}}
 <p class="readout">{{.BatteryBar}} {{.BatteryText}}</p>
 <div class="checkin">
 <p><span class="checkin-label">last check-in:</span> {{.LastSeenText}}</p>
 {{if .NextCheckIn}}<p><span class="checkin-label">next check-in:</span> {{.NextCheckIn}}</p>{{end}}
 </div>
-<img src="/dashboard/preview/{{.DeviceID}}" alt="Last rendered display for {{.Name}}" loading="lazy">
+<img src="/dashboard/preview/{{.DeviceID}}" alt="Last rendered display for {{.Title}}" loading="lazy">
 </div>
 {{end}}
 </div>

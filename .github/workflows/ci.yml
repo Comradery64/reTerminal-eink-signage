@@ -1,0 +1,107 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # go-version-file (not a hardcoded version) so this never drifts from go.mod and needs no
+      # coordination with the toolchain bump the sqlite driver forces (1.22 -> 1.24.0).
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: build
+        run: go build ./...
+
+      - name: vet
+        run: go vet ./...
+
+      - name: gofmt
+        run: |
+          fmt_out="$(gofmt -l .)"
+          if [ -n "$fmt_out" ]; then
+            echo "The following files are not gofmt-formatted:"
+            echo "$fmt_out"
+            exit 1
+          fi
+
+      - name: test
+        run: go test ./... -race -count=1
+
+  static:
+    needs: go
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      # The broker must stay one static, cross-compilable binary: it is what the distroless
+      # runtime image and the Tier 1 systemd deployment both assume. A cgo dependency sneaking in
+      # (directly or transitively) would silently break both without failing `go build ./...` on
+      # a developer's own machine, where CGO_ENABLED defaults to 1.
+      - name: build static linux/amd64
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /tmp/broker-amd64 ./cmd/broker
+
+      - name: build static linux/arm64
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o /tmp/broker-arm64 ./cmd/broker
+
+      - name: binary sizes
+        # Informational only: the sqlite driver adds ~6 MB on top of a ~10 MB linux/arm64 binary.
+        # Printing sizes in every run means a future dependency that doubles this is noticed in
+        # code review, not in a rollout.
+        run: |
+          echo "linux/amd64:"; ls -lh /tmp/broker-amd64
+          echo "linux/arm64:"; ls -lh /tmp/broker-arm64
+
+      # The project mandates the pure-Go modernc.org/sqlite driver specifically because
+      # mattn/go-sqlite3 requires cgo, which would break the two builds above. This is a cheap,
+      # permanent tripwire against that dependency ever being reintroduced.
+      - name: forbid cgo sqlite driver
+        run: |
+          if grep -q 'mattn/go-sqlite3' go.mod go.sum 2>/dev/null; then
+            echo "mattn/go-sqlite3 (cgo) must not be a dependency; use modernc.org/sqlite instead"
+            exit 1
+          fi
+
+      # Belt-and-braces: catches cgo pulled in transitively by some *other* dependency, not just
+      # by an sqlite driver specifically.
+      - name: forbid transitive cgo
+        run: |
+          if go list -deps ./cmd/broker | grep -q '^runtime/cgo'; then
+            echo "cmd/broker transitively depends on runtime/cgo; the broker must build with CGO_ENABLED=0"
+            exit 1
+          fi
+
+      - name: go mod tidy check
+        run: |
+          if go help mod tidy 2>&1 | grep -q -- '-diff'; then
+            go mod tidy -diff
+          else
+            go mod tidy
+            git diff --exit-code -- go.mod go.sum
+          fi

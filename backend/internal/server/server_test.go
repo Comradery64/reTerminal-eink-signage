@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
@@ -21,6 +22,16 @@ import (
 
 const testToken = "testtoken"
 
+// noopPersistStore is the configstore.Store test double every test server uses: it always
+// succeeds without touching disk or the network, so ordinary handler tests never depend on
+// config-persistence behavior — that behavior gets its own dedicated tests in configwrite_test.go.
+type noopPersistStore struct{}
+
+func (noopPersistStore) Persist(context.Context, []byte) error { return nil }
+func (noopPersistStore) Mode() string                          { return "file" }
+func (noopPersistStore) Target() string                        { return "/tmp/test-config.yaml" }
+func (noopPersistStore) Durable() bool                         { return true }
+
 func testServer() *Server {
 	sum := sha256.Sum256([]byte(testToken))
 	cfg := &config.Config{
@@ -32,7 +43,7 @@ func testServer() *Server {
 	cfg.Alerts = config.AlertConfig{LowBatteryPct: 45, ClearPct: 55, MinRenotify: 24 * time.Hour, StaleAfter: time.Hour}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	alerts := notify.NewManager("", 45, 55, 24*time.Hour, log)
-	return New(config.NewLive(cfg), cache.New(), telemetry.New(), alerts, log)
+	return New(config.NewLive(cfg), cache.New(), telemetry.New(), alerts, noopPersistStore{}, log)
 }
 
 // The exact JSON the firmware's tlm::to_json emits (incl. SHT4x env fields) must decode and
