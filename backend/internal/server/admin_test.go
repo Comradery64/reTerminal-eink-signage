@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"fmt"
+	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/calendar"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -9,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func loggedInAdminClient(t *testing.T, srv *httptest.Server) *http.Client {
@@ -636,5 +639,118 @@ func TestAdminSaveRoomKeepsLabelWhenOmitted(t *testing.T) {
 	}
 	if room.TokenSHA256 != hash {
 		t.Errorf("token was wiped by an unrelated edit: got %q", room.TokenSHA256)
+	}
+}
+
+// TestAdminRoomsTableOffersInlineEditAndCalendarSuggestions covers the two UI affordances added
+// because the rooms table previously offered only "Remove": editing a room meant retyping every
+// field into the add form, including calendar addresses like
+// c_examplefakeroom00000000000000@resource.calendar.google.com by hand.
+func TestAdminRoomsTableOffersInlineEditAndCalendarSuggestions(t *testing.T) {
+	s := testServerWithAuth(t)
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+	client := loggedInAdminClient(t, srv)
+
+	resp, err := client.Get(srv.URL + "/admin")
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /admin: err=%v code=%v", err, resp.StatusCode)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	body := string(raw)
+
+	room := s.cfg.Load().Rooms[0]
+
+	// Edit must carry the row's identity so the form can prefill without a second endpoint.
+	if !strings.Contains(body, "data-edit-room") {
+		t.Error("rooms table has no per-row Edit control")
+	}
+	if !strings.Contains(body, `data-device="`+room.DeviceID+`"`) {
+		t.Errorf("Edit control missing device data attribute for %q", room.DeviceID)
+	}
+
+	// The calendar address must be offered as a suggestion, not retyped.
+	if !strings.Contains(body, `<datalist id="known-calendars">`) {
+		t.Error("no known-calendars datalist rendered")
+	}
+	if !strings.Contains(body, `<option value="`+room.Room+`">`) {
+		t.Errorf("configured calendar %q not offered as a suggestion", room.Room)
+	}
+	if !strings.Contains(body, `list="known-calendars"`) {
+		t.Error("calendar input not wired to the datalist")
+	}
+
+	// The prefill script must be in THIS template. It was first injected before the wrong </body>
+	// (the 2FA setup page, whose DOM has none of these IDs), which every assertion above still
+	// passed — the button rendered, it just did nothing. Assert the behavior, not only the markup.
+	if !strings.Contains(body, "getElementById('r-original')") {
+		t.Error("admin page renders the Edit button but not the script that makes it work")
+	}
+
+	// The token hash must not leak into the page via the new data attributes.
+	if room.TokenSHA256 != "" && strings.Contains(body, room.TokenSHA256) {
+		t.Fatal("Edit data attributes must never carry the token hash")
+	}
+}
+
+// failingProbe stands in for a calendar the broker cannot read — the real-world case being a room
+// that was never shared with the service account as freeBusyReader.
+type failingProbe struct{}
+
+func (failingProbe) FetchSchedule(ctx context.Context, roomEmail string, from, to time.Time) (*calendar.Schedule, error) {
+	return nil, fmt.Errorf("freebusy status 404 for %s", roomEmail)
+}
+
+// TestAdminSaveRoomRejectsUnreadableCalendar: without this check a room whose calendar was never
+// shared saves cleanly and then fails silently on every poll forever, showing "unavailable" with
+// nothing pointing at the cause.
+func TestAdminSaveRoomRejectsUnreadableCalendar(t *testing.T) {
+	s := testServerWithAuth(t)
+	s.SetCalendarProbe(failingProbe{})
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+	client := loggedInAdminClient(t, srv)
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+	before := len(s.cfg.Load().Rooms)
+	resp, err := client.PostForm(srv.URL+"/admin/rooms/save", url.Values{
+		"device_id": {"rt-new"}, "name": {"New"},
+		"room": {"never-shared@example.com"}, "token": {"tok-new"},
+	})
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	if loc := resp.Header.Get("Location"); !strings.Contains(loc, "error=") {
+		t.Fatalf("expected an error redirect, got %q", loc)
+	}
+	if got := len(s.cfg.Load().Rooms); got != before {
+		t.Fatalf("room was saved despite an unreadable calendar: %d -> %d", before, got)
+	}
+}
+
+// TestAdminSaveRoomSkipsProbeWhenCalendarUnchanged: re-probing on every edit would make renaming a
+// room or fixing its label fail during a Calendar outage, and those edits cannot introduce the
+// fault the probe exists to catch.
+func TestAdminSaveRoomSkipsProbeWhenCalendarUnchanged(t *testing.T) {
+	s := testServerWithAuth(t)
+	s.SetCalendarProbe(failingProbe{}) // would reject if consulted
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+	client := loggedInAdminClient(t, srv)
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+	existing := s.cfg.Load().Rooms[0]
+	resp, err := client.PostForm(srv.URL+"/admin/rooms/save", url.Values{
+		"device_id": {existing.DeviceID}, "name": {"Renamed"},
+		"room": {existing.Room}, // unchanged
+	})
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	if loc := resp.Header.Get("Location"); strings.Contains(loc, "error=") {
+		t.Fatalf("unchanged-calendar edit was probed and rejected: %q", loc)
+	}
+	if got, _ := s.cfg.Load().RoomByDeviceID(existing.DeviceID); got.Name != "Renamed" {
+		t.Fatalf("rename did not apply, got %q", got.Name)
 	}
 }

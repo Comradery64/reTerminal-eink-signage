@@ -1,11 +1,14 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"html/template"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -26,6 +29,7 @@ func (s *Server) handleAdminPage(w http.ResponseWriter, r *http.Request) {
 		PersistStrip: s.persistStrip(),
 		WebToolsURL:  template.URL(cfg.Firmware.WebToolsURL),
 	}
+	data.KnownCalendars, data.KnownNames = knownRoomSuggestions(cfg)
 	// Two-factor status is about the CURRENT session's own account, not something one admin sets
 	// for another — pulled straight from cfg, same as any other per-account field.
 	if c, err := r.Cookie(adminUI.cookieName); err == nil {
@@ -47,9 +51,10 @@ func (s *Server) handleAdminPage(w http.ResponseWriter, r *http.Request) {
 // existing values; a room being added for the first time must supply a token.
 //
 // "Existing" is looked up by original_device_id if given (a rename — see the delete-old-entry
-// step below), else by device_id itself, since this form has no per-row prefill and is commonly
-// resubmitted with the same device_id just to change one field (e.g. fixing a typo in the name):
-// without this lookup, every such edit would silently wipe the token (failing validation) and any
+// step below), else by device_id itself. The per-row Edit button now prefills original_device_id,
+// but the device_id fallback is still load-bearing for every caller that doesn't: the provisioning
+// wizard, curl, and anyone who opens the form directly and retypes an existing device_id to change
+// one field. Without it, those paths would silently wipe the token (failing validation) and any
 // wake override (config.Room.WakeMode/FlatIntervalSeconds) the room had — exactly the bug that
 // left only one room in the fleet with its business-hours override intact, since every other
 // room's override had never survived a subsequent edit here.
@@ -126,6 +131,24 @@ func (s *Server) handleAdminSaveRoom(w http.ResponseWriter, r *http.Request) {
 		TokenSHA256:         tokenHash,
 		WakeMode:            wakeMode,
 		FlatIntervalSeconds: flatSeconds,
+	}
+
+	// Check the broker can actually read this calendar before saving it. Without this, a room whose
+	// calendar was never shared with the service account saves happily and then fails silently on
+	// every poll — the display just shows "unavailable" forever and nothing points at the cause.
+	// Forgetting the `gam calendar <addr> add freebusy user <sa>` step is the single most likely
+	// mistake when adding a room (see docs/BUILD-GUIDE.md step 2), so it is worth one API call to
+	// catch it at the moment the human can still fix it.
+	//
+	// Only probed when the address is new or changed: re-probing on every label/name/wake edit
+	// would make unrelated edits fail during a Calendar outage, and those edits cannot introduce
+	// this fault.
+	if s.calProbe != nil && room.Room != "" && (!hasExisting || existing.Room != room.Room) {
+		if err := s.probeCalendar(r.Context(), room.Room); err != nil {
+			s.log.Error("admin room save rejected: calendar unreadable", "device", deviceID, "room", room.Room, "err", err)
+			http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#rooms", http.StatusSeeOther)
+			return
+		}
 	}
 
 	newCfg, err := cfg.WithRoom(room)
@@ -583,6 +606,34 @@ type adminPageData struct {
 	// WebToolsURL is the ESP Web Tools module the "Add a device" wizard loads (config
 	// firmware.web_tools_url). Rendered as a script src, never as page text.
 	WebToolsURL template.URL
+
+	// KnownCalendars and KnownNames back the <datalist> suggestions on the room and wizard forms,
+	// so nobody retypes an address like c_examplefakeroom00000000000000@resource.calendar.google.com
+	// by hand. Deliberately only rooms this broker is ALREADY configured for: the service account
+	// holds calendar.freebusy scope on individually-shared calendars and has no directory-listing
+	// capability, so the full set of Workspace rooms is not knowable here (see docs/BUILD-GUIDE.md
+	// §2.2). A datalist suggests without constraining, so a genuinely new room is still typed in.
+	KnownCalendars []string
+	KnownNames     []string
+}
+
+// knownRoomSuggestions returns the distinct calendar addresses and room names already configured,
+// sorted, for the datalists above.
+func knownRoomSuggestions(cfg *config.Config) (calendars, names []string) {
+	seenCal, seenName := map[string]bool{}, map[string]bool{}
+	for _, r := range cfg.Rooms {
+		if r.Room != "" && !seenCal[r.Room] {
+			seenCal[r.Room] = true
+			calendars = append(calendars, r.Room)
+		}
+		if r.Name != "" && !seenName[r.Name] {
+			seenName[r.Name] = true
+			names = append(names, r.Name)
+		}
+	}
+	sort.Strings(calendars)
+	sort.Strings(names)
+	return calendars, names
 }
 
 var adminPageTmpl = template.Must(template.New("admin").Parse(`<!doctype html>
@@ -593,6 +644,12 @@ var adminPageTmpl = template.Must(template.New("admin").Parse(`<!doctype html>
 <title>Meeting display fleet — admin</title>
 <style>` + baseCSS + `
 .layout { display: flex; min-height: 100vh; }
+/* Edit sits next to a destructive Remove in the same cell — deliberately quiet so the dangerous
+   button stays the visually louder of the two. */
+button.linklike {
+  background: none; border: none; padding: 0; margin-right: var(--space-3);
+  color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer;
+}
 .rail {
   flex: 0 0 12rem; padding: var(--space-5) var(--space-4); border-right: 1px solid var(--line);
   position: sticky; top: 0; align-self: flex-start; height: 100vh;
@@ -664,20 +721,24 @@ form button[type=submit]:not(.danger):not(.ghost) { margin-top: var(--space-4); 
 <td class="mono">{{.DeviceID}}</td><td>{{.Name}}{{if .Label}} <span class="mono">— {{.Label}}</span>{{end}}</td><td class="mono">{{.Room}}</td>
 <td>{{if .WakeMode}}{{.WakeMode}} ({{.FlatIntervalSeconds}}s){{else}}fleet default{{end}}</td>
 <td>{{if .TokenConfigured}}configured{{else}}<em>none</em>{{end}}</td>
-<td><form method="POST" action="/admin/rooms/delete" style="display:inline">
+<td><button type="button" class="linklike" data-edit-room
+  data-device="{{.DeviceID}}" data-name="{{.Name}}" data-room="{{.Room}}" data-label="{{.Label}}">Edit</button>
+<form method="POST" action="/admin/rooms/delete" style="display:inline">
 <input type="hidden" name="device_id" value="{{.DeviceID}}">
 <button type="submit" class="danger" onclick="return confirm('Remove {{.Name}} from the fleet? This can\'t be undone here.')">Remove</button>
 </form></td>
 </tr>
 {{end}}
 </table>
-<details class="surface add-room">
+<datalist id="known-calendars">{{range .KnownCalendars}}<option value="{{.}}"></option>{{end}}</datalist>
+<datalist id="known-names">{{range .KnownNames}}<option value="{{.}}"></option>{{end}}</datalist>
+<details class="surface add-room" id="room-form">
 <summary>Add or edit a room</summary>
 <form method="POST" action="/admin/rooms/save">
-<input type="hidden" name="original_device_id" value="">
+<input type="hidden" id="r-original" name="original_device_id" value="">
 <label for="r-device">Device ID</label><input id="r-device" type="text" name="device_id" required>
-<label for="r-name">Name</label><input id="r-name" type="text" name="name" required>
-<label for="r-room">Calendar (room email)</label><input id="r-room" type="text" name="room" required>
+<label for="r-name">Name</label><input id="r-name" type="text" name="name" list="known-names" required>
+<label for="r-room">Calendar (room email)</label><input id="r-room" type="text" name="room" list="known-calendars" required>
 <label for="r-label">Panel label (only for rooms with more than one display, e.g. "Door", "Interior wall")</label>
 <input id="r-label" type="text" name="label" placeholder="leave blank for a single-display room">
 <label for="r-token">Device token (leave blank to keep existing)</label><input id="r-token" type="text" name="token">
@@ -732,9 +793,9 @@ from <span class="mono">idf.py build</span>.
 <label for="w-device">Device ID</label>
 <input id="w-device" type="text" required placeholder="e.g. rt-aspen-door">
 <label for="w-name">Room name</label>
-<input id="w-name" type="text" required placeholder="e.g. Aspen">
+<input id="w-name" type="text" list="known-names" required placeholder="e.g. Aspen">
 <label for="w-room">Calendar (room email)</label>
-<input id="w-room" type="text" required placeholder="aspen@yourdomain.com">
+<input id="w-room" type="text" list="known-calendars" required placeholder="aspen@yourdomain.com">
 <label for="w-label">Panel label (only if this room has more than one display)</label>
 <input id="w-label" type="text" placeholder="e.g. Door">
 <button id="w-prepare" type="submit">Prepare this device</button>
@@ -944,6 +1005,59 @@ another admin's code, each account enrolls its own authenticator app.</p>
   });
 })();
 </script>
+<script>
+// Per-row Edit: fill the existing add/edit form rather than shipping a second one. original_device_id
+// carries the row's ID separately from the visible Device ID field, so renaming a device works —
+// handleAdminSaveRoom removes the old entry when the two differ.
+// Token and wake-override are deliberately NOT prefilled: both follow a keep-what-exists rule
+// server-side, and rendering a token into the page would put a credential in the DOM.
+document.querySelectorAll('[data-edit-room]').forEach(function (b) {
+  b.addEventListener('click', function () {
+    var d = b.dataset;
+    document.getElementById('r-original').value = d.device;
+    document.getElementById('r-device').value = d.device;
+    document.getElementById('r-name').value = d.name;
+    document.getElementById('r-room').value = d.room;
+    document.getElementById('r-label').value = d.label;
+    var box = document.getElementById('room-form');
+    box.open = true;
+    box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    document.getElementById('r-name').focus();
+  });
+});
+// Adding a room clears any leftover edit state, so a stale original_device_id can't make an add
+// silently rename-and-delete an unrelated room.
+var summary = document.querySelector('#room-form > summary');
+if (summary) summary.addEventListener('click', function () {
+  if (!document.getElementById('room-form').open) document.getElementById('r-original').value = '';
+});
+</script>
 </body>
 </html>
 `))
+
+// probeCalendarTimeout bounds the pre-save calendar check. Generous for one freeBusy round trip,
+// short enough that a hung Calendar API doesn't leave an admin staring at a spinner.
+const probeCalendarTimeout = 8 * time.Second
+
+// probeCalendar asks the calendar provider for a small window on roomEmail purely to find out
+// whether the broker can read it at all. The returned error is written straight into /admin's red
+// banner, so it names the two things a human can act on rather than surfacing a raw API error.
+//
+// It deliberately does not try to distinguish "not shared" from "wrong address" from "Calendar is
+// down": the provider returns an opaque `freebusy status %d` for all three (internal/calendar/
+// google.go), and inventing a classifier over that string would be guesswork that reads as
+// certainty. Saying all three plainly is more useful than confidently naming the wrong one.
+func (s *Server) probeCalendar(ctx context.Context, roomEmail string) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), probeCalendarTimeout)
+	defer cancel()
+
+	now := time.Now()
+	if _, err := s.calProbe.FetchSchedule(ctx, roomEmail, now, now.Add(time.Hour)); err != nil {
+		return fmt.Errorf("saved nothing: the broker can't read calendar %q (%v). Either it hasn't "+
+			"been shared with the broker's service account as freeBusyReader, or the address is "+
+			"wrong, or Google Calendar is temporarily unreachable — check the sharing, then retry",
+			roomEmail, err)
+	}
+	return nil
+}

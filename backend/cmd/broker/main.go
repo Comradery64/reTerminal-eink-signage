@@ -116,6 +116,12 @@ func main() {
 	}
 
 	srv := server.New(live, store, tlm, alerts, persist, log)
+	// Let /admin verify a room's calendar is actually readable before saving it. Skipped in -demo:
+	// the fake provider answers for any address, so a probe there would report success for a typo
+	// and teach the operator to trust a check that isn't checking anything.
+	if !*demo {
+		srv.SetCalendarProbe(prov)
+	}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil {
 			log.Error("http server stopped", "err", err)

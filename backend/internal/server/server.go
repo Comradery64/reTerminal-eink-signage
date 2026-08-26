@@ -10,6 +10,7 @@ import (
 
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/auth"
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/cache"
+	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/calendar"
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/config"
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/configstore"
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/notify"
@@ -40,6 +41,13 @@ type Server struct {
 	// carries a device token and the fleet Wi-Fi PSK (see provision.go).
 	provisions *provisionStore
 
+	// calProbe, when non-nil, is used to check that the broker can actually read a room's calendar
+	// before that room is saved (see probeCalendar in admin.go). Set via SetCalendarProbe rather
+	// than New's parameter list: it is genuinely optional — nil disables probing, which is what
+	// every test and -demo run wants — and threading a seventh positional argument through New
+	// would churn every existing call site for a feature none of them use.
+	calProbe calendar.Provider
+
 	// derived caches, recomputed from cfg by refreshDerived on New and on every admin/manager
 	// write (see admin.go/manager.go) — never read cfg's Rooms directly for these, or a write
 	// that lands between requests would leave a stale token/name/credential behind.
@@ -68,6 +76,12 @@ func New(cfg *config.Live, c *cache.Store, tlm *telemetry.Store, alerts *notify.
 	s.pstate.recordOK(persist.Mode(), persist.Target(), persist.Durable(), time.Time{})
 	return s
 }
+
+// SetCalendarProbe enables pre-save calendar validation on /admin's room form. Optional: when it
+// is never called, calProbe stays nil and saves behave exactly as before. Wired only in the real
+// broker (cmd/broker), never in -demo or tests, where a probe would either hit a fake provider or
+// make a network call nothing asked for.
+func (s *Server) SetCalendarProbe(p calendar.Provider) { s.calProbe = p }
 
 // refreshDerived recomputes the device-token, device-name, and login-directory caches from cfg.
 // Call this after every config.Live.Store so a room add/edit/delete, token rotation, or
