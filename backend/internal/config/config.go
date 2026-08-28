@@ -207,6 +207,33 @@ type GoogleConfig struct {
 	// Empty → fall back to GOOGLE_APPLICATION_CREDENTIALS (ADC). No impersonation subject:
 	// the service account reads rooms shared to it directly (freeBusyReader).
 	CredentialsFile string `yaml:"credentials_file"`
+
+	// DetailLevel selects how much of a meeting the displays show, and is the single knob that
+	// decides how much this broker is trusted with:
+	//
+	//   "free_busy" (default) — the freeBusy API and the calendar.freebusy scope. The broker can
+	//     learn that a room is occupied and nothing else; a full compromise leaks busy/free times
+	//     and cannot leak a title, an organizer, or an attendee, because it never had them.
+	//     Rooms are shared to the service account as freeBusyReader.
+	//
+	//   "titles" — the events API and the calendar.events.readonly scope, so panels can show
+	//     "Quarterly planning" instead of "Busy". Requires each room to be shared to the service
+	//     account as a *reader* rather than freeBusyReader, which is a deliberate widening: the
+	//     broker can now read every event detail on every room it has been granted, and so can
+	//     anyone who compromises it.
+	//
+	// Two consequences worth stating plainly before enabling "titles":
+	//
+	//   1. A wall-mounted panel in a corridor is a public surface. Titles like "Q3 redundancy
+	//      planning" become readable by anyone walking past, including visitors. Events marked
+	//      private are rendered as "Private meeting" (see render.meetingTitle), but that only
+	//      protects meetings someone remembered to mark.
+	//   2. The scope is bound when credentials are built at startup, so changing this value needs
+	//      a broker restart. It is deliberately not settable from /admin: silently widening an
+	//      OAuth scope from a web form is not a thing a click should do.
+	//
+	// Empty means "free_busy" — an existing config that predates this field keeps its behavior.
+	DetailLevel string `yaml:"detail_level"`
 }
 
 // Room is one *display*, not one meeting room — several entries may share the same Room
@@ -386,6 +413,9 @@ func (c *Config) warnPlaintextSecrets(fromEnv map[string]bool) {
 }
 
 func (c *Config) applyDefaults() {
+	if c.Google.DetailLevel == "" {
+		c.Google.DetailLevel = "free_busy" // least-privilege default; see GoogleConfig.DetailLevel
+	}
 	if c.Listen == "" {
 		c.Listen = ":8080"
 	}
@@ -498,6 +528,9 @@ func (c *Config) Validate() error {
 	}
 	if !validTelemetryBackend(c.Telemetry.Backend) {
 		return fmt.Errorf("telemetry.backend must be '', 'memory', 'sqlite', or 'prometheus', got %q", c.Telemetry.Backend)
+	}
+	if !validGoogleDetailLevel(c.Google.DetailLevel) {
+		return fmt.Errorf("google.detail_level must be '', 'free_busy', or 'titles', got %q", c.Google.DetailLevel)
 	}
 	if !validConfigPersistenceMode(c.ConfigPersistence.Mode) {
 		return fmt.Errorf("config_persistence.mode must be '', 'auto', 'file', 'configmap', or 'none', got %q", c.ConfigPersistence.Mode)
@@ -780,6 +813,12 @@ func validUserRole(r string) bool {
 // validTelemetryBackend treats "" as valid (same convention as validWakeMode above) — a bare
 // Config{} that hasn't been through applyDefaults yet (e.g. in tests, or mid-construction) is still
 // a legal value; applyDefaults is what turns "" into "memory" before the broker actually starts.
+// validGoogleDetailLevel treats "" as valid ("free_busy"), same convention as the other enums —
+// a config predating this field must keep working untouched.
+func validGoogleDetailLevel(d string) bool {
+	return d == "" || d == "free_busy" || d == "titles"
+}
+
 func validTelemetryBackend(b string) bool {
 	return b == "" || b == "memory" || b == "sqlite" || b == "prometheus"
 }

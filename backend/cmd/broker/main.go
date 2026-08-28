@@ -75,7 +75,7 @@ func main() {
 		log.Info("running in DEMO mode — built-in fake schedule, no calendar provider")
 		prov = calendar.NewDemo()
 	case cfg.Provider == "google":
-		prov, err = calendar.NewGoogle(ctx, cfg.Google.CredentialsFile)
+		prov, err = calendar.NewGoogle(ctx, cfg.Google.CredentialsFile, cfg.Google.DetailLevel, log)
 	}
 	if err != nil {
 		log.Error("calendar provider init failed", "provider", cfg.Provider, "err", err)

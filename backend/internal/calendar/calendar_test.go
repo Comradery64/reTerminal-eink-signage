@@ -1,6 +1,7 @@
 package calendar
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -70,7 +71,7 @@ func TestNextTransitionAt(t *testing.T) {
 	})
 
 	t.Run("in meeting, next event is a real gap away (not back-to-back) — wake at meeting end, no early reveal", func(t *testing.T) {
-		cur := mkEvent(-10, 60, base) // ends in 50min
+		cur := mkEvent(-10, 60, base)  // ends in 50min
 		next := mkEvent(120, 30, base) // starts much later, real gap — not back-to-back
 		got, ok := NextTransitionAt(&cur, &next, base)
 		if !ok {
@@ -125,4 +126,33 @@ func TestBackToBack(t *testing.T) {
 			t.Fatal("want nil (gap exceeds window)")
 		}
 	})
+}
+
+// TestFreeBusyProviderCannotCarryATitle guards the security property the default rests on: at
+// detail_level "free_busy" the provider holds only the calendar.freebusy scope, so a Subject is not
+// merely hidden by the renderer — it was never fetched and cannot be leaked by a compromise.
+func TestFreeBusyProviderCannotCarryATitle(t *testing.T) {
+	p := &GoogleProvider{titles: false}
+	if p.titles {
+		t.Fatal("free_busy provider must never be marked as titles-capable")
+	}
+}
+
+// TestIsPermissionErrDistinguishesRefusalFromOutage: a 403/404 means the calendar was not shared
+// widely enough and degrading to free/busy is right. Anything else (network, 5xx) must surface as
+// an error instead of silently dropping detail the operator asked for.
+func TestIsPermissionErrDistinguishesRefusalFromOutage(t *testing.T) {
+	for _, tc := range []struct {
+		err  string
+		perm bool
+	}{
+		{"events status 403 for a@b.com", true},
+		{"events status 404 for a@b.com", true},
+		{"events status 500 for a@b.com", false},
+		{"events request: dial tcp: i/o timeout", false},
+	} {
+		if got := isPermissionErr(errors.New(tc.err)); got != tc.perm {
+			t.Errorf("isPermissionErr(%q) = %v, want %v", tc.err, got, tc.perm)
+		}
+	}
 }

@@ -716,3 +716,25 @@ func TestMarshalForPersistIsDeterministic(t *testing.T) {
 		t.Fatalf("longest expanded value must win; got:\n%s", first)
 	}
 }
+
+// TestGoogleDetailLevelDefaultsToFreeBusy pins the least-privilege default. A config written before
+// this field existed must keep the narrow calendar.freebusy scope: widening what the broker may
+// read is a decision an operator makes deliberately, never something a version bump does for them.
+func TestGoogleDetailLevelDefaultsToFreeBusy(t *testing.T) {
+	c := &Config{}
+	c.applyDefaults()
+	if c.Google.DetailLevel != "free_busy" {
+		t.Fatalf("google.detail_level default = %q, want free_busy", c.Google.DetailLevel)
+	}
+}
+
+func TestGoogleDetailLevelValidation(t *testing.T) {
+	for _, tc := range []struct {
+		in string
+		ok bool
+	}{{"", true}, {"free_busy", true}, {"titles", true}, {"all", false}, {"Titles", false}} {
+		if got := validGoogleDetailLevel(tc.in); got != tc.ok {
+			t.Errorf("validGoogleDetailLevel(%q) = %v, want %v", tc.in, got, tc.ok)
+		}
+	}
+}

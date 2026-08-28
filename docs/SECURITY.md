@@ -10,8 +10,39 @@
 | Token leak server-side | Broker stores only `sha256(token)`, never the raw token |
 | Passive network capture of schedules | TLS 1.2/1.3 to the broker; firmware pins an **internal CA** (`broker_ca.pem`); SNI + CN/SAN checked. Also: free/busy carries no meeting titles, so there's little to capture. |
 | Static Google key theft | **No key exists.** Auth is keyless via **Workload Identity Federation** — on Tier 3 (k3s), k3s mints a short-lived (1h) projected token exchanged for a short-lived SA token; nothing long-lived at rest. On Tiers 1/2 (no Kubernetes) see the signing-key trade-off below. |
+| Compromised broker → calendar exposure (detail_level: "titles") | **Scope widens deliberately.** `calendar.events.readonly` + rooms shared as *reader* means a compromise leaks titles, organizers, and times for every shared room. Opt-in only; see "Meeting detail level" below. |
 | Compromised broker → calendar exposure | Scope is **`calendar.freebusy` only**, and the SA is shared on **exactly the 3 room calendars** (freeBusyReader). Worst case leaks busy/free times — never titles, attendees, or any other calendar. No impersonation, no domain-wide delegation. |
 | Stolen wiftoken signing key (Tiers 1/2 only) | See "Tier 1/2 signing-key trade-off" below — this is a real, named exception to the "nothing long-lived at rest" property above, not an oversight. |
+
+## Meeting detail level — the one knob that changes this threat model
+
+`google.detail_level` decides what the broker is allowed to read, and therefore what a compromise
+can cost. It defaults to `free_busy` and is never widened by an upgrade.
+
+| | `free_busy` (default) | `titles` |
+|---|---|---|
+| Scope | `calendar.freebusy` | `calendar.events.readonly` |
+| Room shared as | `freeBusyReader` | `reader` |
+| Panel shows | "Busy" | the meeting title |
+| Worst case on full compromise | busy/free times only | titles, organizers, times, for every shared room |
+
+The default is not merely a redaction — at `free_busy` a title is never fetched, so it cannot be
+leaked by a broker that is fully owned. That is a stronger property than hiding it at render time,
+and it is why the narrow option stays the default.
+
+Two things to weigh before enabling `titles`:
+
+1. **A wall-mounted panel is a public surface.** A corridor display showing real titles is readable
+   by everyone who walks past, including visitors and contractors. Events marked private or
+   confidential render as "Private meeting", but that only protects meetings someone remembered to
+   mark.
+2. **Scope is bound at startup**, so changing this needs a broker restart. It is deliberately not
+   settable from `/admin`: silently widening an OAuth scope from a web form is not something a
+   click should do.
+
+If `titles` is set but a room is still shared as `freeBusyReader`, the events call is refused and
+the broker logs an ERROR and falls back to free/busy for the rest of the process — panels keep
+working and show "Busy". Fix the sharing, then restart to re-arm.
 
 ## Credential locations
 

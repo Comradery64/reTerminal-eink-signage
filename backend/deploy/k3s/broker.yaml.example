@@ -82,6 +82,10 @@ data:
     google:
       # Keyless: external-account (WIF) cred config that references the projected k8s token.
       credentials_file: "/etc/gcp/cred-config.json"
+      # "free_busy" (default) or "titles". "titles" needs the calendar.events.readonly scope AND
+      # each room shared as reader (not freeBusyReader), and puts real meeting titles on a public
+      # wall panel. See config.example.yaml for the full trade-off. Restart required to change.
+      detail_level: "free_busy"
     alerts:
       low_battery_pct: 45
       clear_pct: 55

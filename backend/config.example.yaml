@@ -34,6 +34,23 @@ google:
   # on that room's calendar (shared directly — see docs/DEPLOY.md). Empty → GOOGLE_APPLICATION_CREDENTIALS.
   credentials_file: "/etc/gcp/cred-config.json"
 
+  # How much of a meeting the panels show. This is the one knob that decides how much this broker
+  # is trusted with, so it defaults to the narrow option and is never changed for you.
+  #
+  #   "free_busy" (default) — freeBusy API, calendar.freebusy scope. The broker learns that a room
+  #     is occupied and nothing else. A full compromise leaks busy/free times and CANNOT leak a
+  #     title, organizer, or attendee, because it never had them. Share rooms as freeBusyReader.
+  #
+  #   "titles" — events API, calendar.events.readonly scope. Panels show "Quarterly planning"
+  #     instead of "Busy". Requires sharing each room as *reader* rather than freeBusyReader, and
+  #     means the broker (and anyone who compromises it) can read every event detail on those
+  #     calendars. Events marked private still render as "Private meeting".
+  #
+  # Remember a wall panel is a public surface: a corridor display showing real titles is readable
+  # by anyone walking past, visitors included. Changing this needs a broker restart — the OAuth
+  # scope is bound when credentials are built at startup.
+  detail_level: "free_busy"
+
 # Low-battery alert to the building manager (in-broker path). Complementary to the Prometheus
 # rule in deploy/k3s/alerts.yaml — run either or both.
 alerts:
