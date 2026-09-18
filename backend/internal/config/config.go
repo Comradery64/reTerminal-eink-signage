@@ -885,13 +885,19 @@ func (c *Config) flatWakeSeconds(room Room, now time.Time) uint32 {
 // created/moved/cancelled live during the day) and no cap off-hours (trusting the calendar,
 // since off-hours activity is rare) — falling back to a periodic check or a sleep-through to the
 // next business-hours start when nothing is on the calendar at all.
+//
+// The periodic safety-net check-in is grid-aligned (secondsUntilNextBoundary) rather than a flat
+// BusinessHoursSeconds counted from `now`: a flat relative offset has no wall-clock anchor, so on
+// any day with no calendar transitions to re-anchor against, successive empty-calendar cycles walk
+// further off the fleet's check-in grid each time. Transition-driven wakes below are unaffected —
+// those already recompute exactly against real event times every cycle.
 func (c *Config) smartWakeSeconds(cur, next *calendar.Event, now time.Time) uint32 {
 	business := c.isBusinessHours(now)
 
 	transitionAt, ok := calendar.NextTransitionAt(cur, next, now)
 	if !ok {
 		if business {
-			return c.Wake.BusinessHoursSeconds // periodic safety-net check-in; cheap if unchanged
+			return secondsUntilNextBoundary(now.In(c.Location()), c.Wake.BusinessHoursSeconds)
 		}
 		return secondsUntilBusinessHoursStart(now.In(c.Location()), c.Wake.BusinessStartHour)
 	}

@@ -171,14 +171,38 @@ func TestSmartWakeSecondsOffHoursNothingScheduledSleepsToBusinessStart(t *testin
 	}
 }
 
+// TestSmartWakeSecondsBusinessHoursNothingScheduled covers the safety-net branch that used to
+// drift: with no calendar transition to re-anchor against, a flat BusinessHoursSeconds counted
+// from `now` would walk further off the fleet's check-in grid on every successive empty-calendar
+// cycle. It must instead land on the same :05/:20/:35/:50 grid as flat mode.
 func TestSmartWakeSecondsBusinessHoursNothingScheduled(t *testing.T) {
 	c := smartConfig()
 	loc := c.Location()
 	now := time.Date(2026, 7, 20, 11, 0, 0, 0, loc)
 
 	got := c.NextWakeDuration(Room{}, nil, nil, now)
-	if got != c.Wake.BusinessHoursSeconds {
-		t.Fatalf("want periodic safety-net %d, got %d", c.Wake.BusinessHoursSeconds, got)
+	want := time.Date(2026, 7, 20, 11, 5, 0, 0, loc) // next :05/:20/:35/:50 mark
+	if wake := now.Add(time.Duration(got) * time.Second); !wake.Equal(want) {
+		t.Fatalf("want wake at %s (grid-aligned), got %s", want, wake)
+	}
+}
+
+// TestSmartWakeSecondsBusinessHoursNothingScheduledDoesNotDrift confirms the safety-net branch
+// stays grid-aligned across repeated empty-calendar cycles, even when each cycle's `now` has
+// walked away from the previous cycle's computed wake instant (e.g. by device wake-processing
+// overhead) — the exact scenario that caused a real room to drift ~7 minutes off the grid.
+func TestSmartWakeSecondsBusinessHoursNothingScheduledDoesNotDrift(t *testing.T) {
+	c := smartConfig()
+	loc := c.Location()
+	now := time.Date(2026, 7, 20, 11, 0, 0, 0, loc)
+
+	for i := 0; i < 20; i++ {
+		got := c.NextWakeDuration(Room{}, nil, nil, now)
+		now = now.Add(time.Duration(got) * time.Second)
+		if min := now.Minute(); min != 5 && min != 20 && min != 35 && min != 50 {
+			t.Fatalf("cycle %d: wake at %s is off the :05/:20/:35/:50 grid", i, now)
+		}
+		now = now.Add(90 * time.Second) // simulate wake-processing overhead before the next check-in
 	}
 }
 
