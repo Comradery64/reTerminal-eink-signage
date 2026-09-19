@@ -5,6 +5,8 @@ HANDOFF.md
 # Cross-session coordination scratchpad (two Claude sessions working this repo
 # concurrently). Local-only: may reference registry IPs, image tags, cluster state.
 .coord/
+# Contains the literal internal org/IP strings .gitleaks.toml deliberately doesn't — see its comment.
+.gitleaks.internal.toml
 provisioning/
 *-tokens.txt
 google-sa.json

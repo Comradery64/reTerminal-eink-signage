@@ -10,3 +10,32 @@ regexes = [
   # Documented in that file as demo-only; never used against a real broker.
   '''7c43ef5ae21d43ce2743f770c68e24def1a43ee2f416d2438410c8af7af2ff2c''',
 ]
+
+# ── internal identifiers ───────────────────────────────────────────────────────
+# These are NOT credentials, which is exactly why the default rules miss them and why
+# they reached this public repo once already: a real room calendar address was written
+# into a code comment and a commit message as an "illustrative example", and had to be
+# scrubbed by rewriting history. Nothing here is secret; all of it identifies internal
+# infrastructure, and none of it belongs in a public repo. Illustrative examples must be
+# fabricated, never copied from the live cluster.
+#
+# Rules below are structural (no literal org name/IP in the pattern itself), so they're
+# safe to track here. Rules that would need to spell out the literal org domain or an
+# internal IP range live in a local-only, gitignored overlay instead (see README/ops docs
+# for the filename) — gitleaks skips scanning its own config, so a tracked rule containing
+# the literal string it's trying to block would publish that exact string. Run the overlay
+# locally before pushing if you need that extra check.
+
+[[rules]]
+id = "internal-google-room-resource"
+description = "Real Google Workspace room resource address — fabricate one instead (c_examplefakeroom…)"
+regex = '''c_[a-z0-9]{16,}@resource\.calendar\.google\.com'''
+[rules.allowlist]
+regexes = ['''c_examplefakeroom0*@resource\.calendar\.google\.com''']
+
+[[rules]]
+id = "real-gcp-project-number"
+description = "Real GCP project number in a projects/ path — use 000000000000"
+regex = '''/projects/[0-9]{9,}'''
+[rules.allowlist]
+regexes = ['''/projects/0{9,}''', '''/projects/123456789''']
