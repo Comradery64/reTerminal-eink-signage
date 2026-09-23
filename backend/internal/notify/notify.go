@@ -71,18 +71,18 @@ func (l *logNotifier) Send(_ context.Context, m Message) error {
 
 // ── Hysteresis manager ───────────────────────────────────────────────────────
 type devState struct {
-	alerting     bool      // currently below the low threshold (latched)
+	alerting     bool // currently below the low threshold (latched)
 	lastNotified time.Time
 }
 
 type Manager struct {
-	notifier   Notifier
-	lowPct     int
-	clearPct   int
-	renotify   time.Duration
-	log        *slog.Logger
-	mu         sync.Mutex
-	state      map[string]*devState
+	notifier Notifier
+	lowPct   int
+	clearPct int
+	renotify time.Duration
+	log      *slog.Logger
+	mu       sync.Mutex
+	state    map[string]*devState
 }
 
 // NewManager builds the alert manager. If webhookURL is empty, alerts only log.
