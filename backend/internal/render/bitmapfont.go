@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -39,10 +41,25 @@ var (
 	regFonts  = map[int]*bitmapFont{}
 )
 
+// atlasDirOverride, when set, loads .fnt atlases from this filesystem directory instead of the
+// embedded set — a font-experiment escape hatch for cmd/preview so a freshly baked candidate atlas
+// can be previewed without overwriting fonts/atlas/*.fnt (which go:embed bakes into every binary,
+// including the production broker) and without a recompile per bake. Never read outside cmd/preview
+// use — the broker never sets this env var.
+const atlasDirOverrideEnv = "MD_ATLAS_DIR"
+
 func loadAtlases() {
+	dir := os.Getenv(atlasDirOverrideEnv)
 	load := func(m map[int]*bitmapFont, prefix string, sizes []int) {
 		for _, sz := range sizes {
-			data, err := atlasFS.ReadFile(fmt.Sprintf("fonts/atlas/%s_%d.fnt", prefix, sz))
+			name := fmt.Sprintf("fonts/atlas/%s_%d.fnt", prefix, sz)
+			var data []byte
+			var err error
+			if dir != "" {
+				data, err = os.ReadFile(filepath.Join(dir, filepath.Base(name)))
+			} else {
+				data, err = atlasFS.ReadFile(name)
+			}
 			if err != nil {
 				panic("render: read atlas: " + err.Error())
 			}
@@ -143,9 +160,10 @@ func (f *bitmapFont) measure(s string) int {
 	return w
 }
 
-// parseBitmapFont decodes the format written by tools/bakefont/bake_font.py.
+// parseBitmapFont decodes the format written by tools/bakefont/bake_font.py: full 8-bit
+// antialiased coverage per pixel, one byte per pixel, row-major.
 func parseBitmapFont(data []byte) (*bitmapFont, error) {
-	if len(data) < 10 || string(data[0:4]) != "BFA1" {
+	if len(data) < 10 || string(data[0:4]) != "BFA3" {
 		return nil, fmt.Errorf("bad magic")
 	}
 	ascent := int(int16(binary.BigEndian.Uint16(data[4:6])))
@@ -168,7 +186,7 @@ func parseBitmapFont(data []byte) (*bitmapFont, error) {
 		adv := int(binary.BigEndian.Uint16(data[off+8 : off+10]))
 		off += 10
 
-		rowBytes := (w + 7) / 8
+		rowBytes := w
 		nbytes := rowBytes * h
 		if off+nbytes > len(data) {
 			return nil, fmt.Errorf("truncated bitmap at index %d", i)
@@ -183,8 +201,20 @@ func parseBitmapFont(data []byte) (*bitmapFont, error) {
 	return f, nil
 }
 
-// drawBM blits s starting with its left edge at x, baseline at y+f.ascent. Returns the total
-// advance (pen distance moved), which callers use as the drawn width.
+// alphaAt returns g's raw 8-bit antialiased coverage at pixel (xx, yy).
+func (g *bmGlyph) alphaAt(xx, yy int) uint8 {
+	return g.bitmap[yy*g.rowBytes+xx]
+}
+
+// drawBM blits s starting with its left edge at x, baseline at y+f.ascent. Glyph pixels are a hard
+// ink/no-ink decision (alpha >= 128) using the atlas's full 8-bit antialiased coverage only to place
+// that threshold accurately (sub-pixel-correct edges from FreeType's hinting), never as a blended,
+// dithered pixel. Blending + Floyd-Steinberg dithering per glyph pixel was tried and reverted: on
+// Spectra 6 (no gray ink) it visibly reads as noise, not smoothing — an isolated dithered pixel on
+// an otherwise straight stem or diagonal looks like a stray pixel poking out of the edge, because
+// error diffusion has no notion of "this is a straight line, don't perturb it." A clean per-pixel
+// threshold has no such artifact and looks strictly sharper. Returns the total advance (pen distance
+// moved), which callers use as the drawn width.
 func drawBM(dst *image.RGBA, f *bitmapFont, x, y int, s string, c color.RGBA) int {
 	baseline := y + f.ascent
 	penX := x
@@ -195,9 +225,8 @@ func drawBM(dst *image.RGBA, f *bitmapFont, x, y int, s string, c color.RGBA) in
 		}
 		gx, gy := penX+g.offsetX, baseline+g.offsetY
 		for yy := 0; yy < g.h; yy++ {
-			row := g.bitmap[yy*g.rowBytes : (yy+1)*g.rowBytes]
 			for xx := 0; xx < g.w; xx++ {
-				if row[xx/8]&(0x80>>uint(xx%8)) == 0 {
+				if g.alphaAt(xx, yy) < 128 {
 					continue
 				}
 				dst.SetRGBA(gx+xx, gy+yy, c)

@@ -37,6 +37,7 @@ RTC_DATA_ATTR RtcState g_rtc;   // single definition (declared extern in app_sta
 
 static const char* TAG = "app";
 
+#if !CONFIG_MD_BENCH_STATIC_FRAME
 static uint32_t clamp_wake(uint32_t s) {
     if (s == 0) return cfg::DEFAULT_WAKE_INTERVAL_S;
     if (s < cfg::MIN_WAKE_INTERVAL_S) return cfg::MIN_WAKE_INTERVAL_S;
@@ -66,10 +67,39 @@ static bool sync_time_if_needed() {
     }
     return ok;
 }
+#endif // !CONFIG_MD_BENCH_STATIC_FRAME
+
+#if CONFIG_MD_BENCH_STATIC_FRAME
+extern const uint8_t bench_frame_start[] asm("_binary_frame_mdpf_start");
+extern const uint8_t bench_frame_end[]   asm("_binary_frame_mdpf_end");
+#endif
 
 extern "C" void app_main(void) {
     const int64_t t0 = esp_timer_get_time();
 
+#if CONFIG_MD_BENCH_STATIC_FRAME
+    // Bench bring-up: blit the embedded static frame and halt. No NVS/WiFi/broker touched at all —
+    // see Kconfig.projbuild. Never the path for a real deployed unit.
+    ESP_LOGW(TAG, "MD_BENCH_STATIC_FRAME: displaying embedded frame, skipping network entirely");
+    mdpf::Header bh;
+    size_t frame_len = (size_t)(bench_frame_end - bench_frame_start);
+    if (mdpf::parse_header(bench_frame_start, frame_len, &bh)) {
+        const uint8_t* body = bench_frame_start + mdpf::HEADER_SIZE;
+        size_t body_len = frame_len - mdpf::HEADER_SIZE;
+        if (epd::power_up()) {
+            bool ok = epd::show(body, body_len, bh);
+            epd::power_down();
+            ESP_LOGI(TAG, "bench frame show() = %s", ok ? "ok" : "FAILED");
+        } else {
+            ESP_LOGE(TAG, "bench frame: epd::power_up() failed");
+        }
+    } else {
+        ESP_LOGE(TAG, "bench frame: bad MDPF header (len=%u)", (unsigned)frame_len);
+    }
+    ESP_LOGW(TAG, "bench run complete — halting (no sleep, no reboot)");
+    vTaskDelay(portMAX_DELAY);
+    return;
+#else
     rtc_state_ensure_init();
     g_rtc.boot_count++;
     const auto wake = power::wake_reason();
@@ -168,4 +198,5 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "cycle done in %lld ms; sleeping %u s (err=%s)",
              (esp_timer_get_time() - t0) / 1000, next_wake, err ? err : "none");
     power::deep_sleep(next_wake);
+#endif // CONFIG_MD_BENCH_STATIC_FRAME
 }

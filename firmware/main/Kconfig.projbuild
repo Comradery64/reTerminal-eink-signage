@@ -11,6 +11,15 @@ menu "Meeting Display Configuration"
         int "Broker TLS port"
         default 443
 
+    config MD_BENCH_STATIC_FRAME
+        bool "Bench mode: display one embedded static frame, skip WiFi/broker/provisioning entirely"
+        default n
+        help
+            For bringing up a panel on the bench with no NVS provisioning, no WiFi, and no broker.
+            On boot, blits main/bench/frame.mdpf (an MDPF payload produced by
+            backend/cmd/benchframe) straight to the panel via the normal decode+refresh path, then
+            halts. Never enable for a real deployed unit — it never touches the network.
+
     config MD_SNTP_SERVER
         string "SNTP server (time sync before TLS)"
         default ""

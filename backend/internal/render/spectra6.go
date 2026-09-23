@@ -52,9 +52,45 @@ func newCanvas(w, h int) *image.Paletted {
 	return img
 }
 
+// achromaticTolerance bounds how far apart c's channels can be before it's no longer treated as
+// a shade of gray. Flat fills in this renderer are always drawn as one exact palette color, never
+// blended — the only source of near-gray-but-not-quite pixels is 2-bit antialiased glyph coverage
+// blended against a white or black background (bitmapfont.go's drawBM). Spectra 6 has no gray ink,
+// so letting Floyd–Steinberg dither those pixels against the full palette lets its error-diffusion
+// drift toward whichever saturated color happens to sit nearest a given gray level, producing
+// visible red/green/blue fringing along glyph curves. Restricting achromatic pixels to black/white
+// keeps text edges dithering within the two inks that can actually represent gray.
+const achromaticTolerance = 12
+
+func isAchromatic(c color.RGBA) bool {
+	maxC := c.R
+	if c.G > maxC {
+		maxC = c.G
+	}
+	if c.B > maxC {
+		maxC = c.B
+	}
+	minC := c.R
+	if c.G < minC {
+		minC = c.G
+	}
+	if c.B < minC {
+		minC = c.B
+	}
+	return int(maxC)-int(minC) <= achromaticTolerance
+}
+
 func nearestIndex(c color.RGBA) int {
+	candidates := palette
+	if isAchromatic(c) {
+		candidates = palette[:2] // black, white — see achromaticTolerance doc comment
+	}
+	return nearestAmong(c, candidates)
+}
+
+func nearestAmong(c color.RGBA, candidates []palEntry) int {
 	best, bestD := 0, 1<<31
-	for i, p := range palette {
+	for i, p := range candidates {
 		dr := int(c.R) - int(p.c.R)
 		dg := int(c.G) - int(p.c.G)
 		db := int(c.B) - int(p.c.B)

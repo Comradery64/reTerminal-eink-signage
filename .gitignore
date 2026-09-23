@@ -30,6 +30,8 @@ firmware/build/
 firmware/sdkconfig
 firmware/sdkconfig.old
 firmware/sdkconfig.defaults.local
+firmware/main/bench/frame.mdpf
+firmware/.cache/
 
 # Python bytecode
 __pycache__/
