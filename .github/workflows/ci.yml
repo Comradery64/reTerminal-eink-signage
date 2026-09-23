@@ -91,6 +91,12 @@ jobs:
       # Belt-and-braces: catches cgo pulled in transitively by some *other* dependency, not just
       # by an sqlite driver specifically.
       - name: forbid transitive cgo
+        # Must set CGO_ENABLED=0 here too (matches the build steps above) — left at the runner's
+        # default of 1, `net`/`net/http` alone pulls in runtime/cgo on Linux for every Go program
+        # that imports them, which is unrelated to this repo and would make this check impossible
+        # to ever pass for an HTTP server.
+        env:
+          CGO_ENABLED: 0
         run: |
           if go list -deps ./cmd/broker | grep -q '^runtime/cgo'; then
             echo "cmd/broker transitively depends on runtime/cgo; the broker must build with CGO_ENABLED=0"
