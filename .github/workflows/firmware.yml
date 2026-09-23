@@ -46,6 +46,10 @@ jobs:
       # out, so this unattended build needs no signing key and no secrets — verified locally
       # before making this a required (non-workflow_dispatch, non-continue-on-error) check.
       - name: build
+        # GitHub Actions' `container:` execution runs each step directly via the shell, bypassing
+        # the espressif/idf image's own ENTRYPOINT — which is what normally sources export.sh and
+        # puts idf.py on PATH. Source it explicitly here instead ($IDF_PATH is set by the image).
         run: |
+          . "$IDF_PATH/export.sh"
           idf.py set-target esp32s3
           idf.py build
