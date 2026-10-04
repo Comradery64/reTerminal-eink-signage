@@ -8,6 +8,12 @@ on:
   pull_request:
     paths:
       - "firmware/**"
+  # Manual trigger. Without this, a change to THIS FILE cannot exercise itself: the push trigger is
+  # filtered on firmware/**, so a workflow-only commit never runs the workflow it just edited. That
+  # is not hypothetical — the fix that made this job work (sourcing export.sh before idf.py) touched
+  # only this file, so it never ran, and the job's single recorded result stayed the failure that
+  # preceded it while the overall CI badge read green.
+  workflow_dispatch:
 
 permissions:
   contents: read

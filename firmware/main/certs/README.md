@@ -14,3 +14,15 @@ this file.**
   certificate and place it here instead.
 
 This file is intentionally **not** committed — every deployment pins a different CA.
+
+## CI builds generate a throwaway cert here
+
+`.github/workflows/firmware.yml` writes a self-signed `broker_ca.pem` into this directory before
+building (`openssl req -x509 … -subj "/CN=ci-placeholder"`, 1-day validity). CI has no real broker
+to trust and only needs to prove the source compiles and links, and `EMBED_TXTFILES` refuses to
+build without *some* file at this path.
+
+That placeholder is never published: the workflow builds and discards, and the generated file is
+untracked. A unit flashed with a CI-built image would trust nothing real and fail closed at TLS
+connect, which is the intended behaviour — supply your own CA root here before building anything
+you intend to flash.
