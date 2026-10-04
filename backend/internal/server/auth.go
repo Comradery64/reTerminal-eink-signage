@@ -41,3 +41,16 @@ func (a *deviceAuth) verify(deviceID string, r *http.Request) bool {
 	got := sha256.Sum256([]byte(strings.TrimPrefix(auth, p)))
 	return subtle.ConstantTimeCompare(got[:], want) == 1
 }
+
+// presentedTokenSHA256 returns the hex sha256 of the request's bearer token ("" if none), for
+// logging rejected device requests. Only the hash is ever logged — the same value the config
+// stores — so an operator can re-sync a unit whose config hash drifted without touching it.
+func presentedTokenSHA256(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	const p = "Bearer "
+	if !strings.HasPrefix(auth, p) {
+		return ""
+	}
+	got := sha256.Sum256([]byte(strings.TrimPrefix(auth, p)))
+	return hex.EncodeToString(got[:])
+}

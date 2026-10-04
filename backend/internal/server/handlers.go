@@ -18,6 +18,7 @@ const maxTelemetryBody = 4 << 10 // 4 KiB is plenty for a health report
 func (s *Server) handleDisplay(w http.ResponseWriter, r *http.Request) {
 	device := r.PathValue("device")
 	if !s.deviceAuthTable().verify(device, r) {
+		s.logAuthRejected(device, r)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -92,6 +93,7 @@ func (s *Server) setFirmwareHeaders(w http.ResponseWriter, cfg *config.Config) {
 func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 	device := r.PathValue("device")
 	if !s.deviceAuthTable().verify(device, r) {
+		s.logAuthRejected(device, r)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -111,4 +113,12 @@ func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	s.tlm.WriteMetrics(w, time.Now())
+}
+
+// logAuthRejected records a 401 so a unit whose config token hash drifted is visible (a silent
+// 401 looks identical to an offline unit). Logs the presented token's hash, never the token.
+func (s *Server) logAuthRejected(device string, r *http.Request) {
+	s.log.Warn("device auth rejected", "device", device, "path", r.URL.Path,
+		"presented_token_sha256", presentedTokenSHA256(r),
+		"remote", r.RemoteAddr, "x_forwarded_for", r.Header.Get("X-Forwarded-For"))
 }
