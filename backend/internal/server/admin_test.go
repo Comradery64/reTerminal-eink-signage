@@ -754,3 +754,67 @@ func TestAdminSaveRoomSkipsProbeWhenCalendarUnchanged(t *testing.T) {
 		t.Fatalf("rename did not apply, got %q", got.Name)
 	}
 }
+
+// TestAdminSaveRoomValidationErrorRedirectsToRoomsSection: WithRoom's own validation (as opposed
+// to the calendar-probe rejection, which already carried this anchor) must land the admin back at
+// the Rooms section with the "Add or edit a room" form reachable, not at the top of the page.
+func TestAdminSaveRoomValidationErrorRedirectsToRoomsSection(t *testing.T) {
+	s := testServerWithAuth(t)
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+	client := loggedInAdminClient(t, srv)
+
+	existing := s.cfg.Load().Rooms[0]
+	// A second display on the same calendar with no label trips Validate's distinct-label rule —
+	// a validation error from WithRoom itself, not the calendar probe (s.calProbe is nil here).
+	resp, err := client.PostForm(srv.URL+"/admin/rooms/save", url.Values{
+		"device_id": {"rt-2"}, "name": {"Aspen"}, "room": {existing.Room}, "token": {"tok-2"},
+	})
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	loc := resp.Header.Get("Location")
+	if !strings.Contains(loc, "error=") {
+		t.Fatalf("expected an error redirect, got %q", loc)
+	}
+	if !strings.Contains(loc, "#rooms") {
+		t.Errorf("room validation error redirect missing #rooms anchor, got %q", loc)
+	}
+}
+
+// TestAdminAccessTableOffersInlineEdit mirrors TestAdminRoomsTableOffersInlineEditAndCalendarSuggestions:
+// editing a user's role previously meant retyping their username into "Grant or edit access" blind,
+// with no on-screen confirmation of their current role.
+func TestAdminAccessTableOffersInlineEdit(t *testing.T) {
+	s := testServerWithAuth(t)
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+	client := loggedInAdminClient(t, srv)
+
+	resp, err := client.Get(srv.URL + "/admin")
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /admin: err=%v code=%v", err, resp.StatusCode)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	body := string(raw)
+
+	if !strings.Contains(body, "data-edit-user") {
+		t.Fatal("access table has no per-row Edit control")
+	}
+	if !strings.Contains(body, `data-username="`+testManagerUsername+`"`) {
+		t.Errorf("Edit control missing username data attribute for %q", testManagerUsername)
+	}
+	if !strings.Contains(body, `data-role="manager"`) {
+		t.Error("Edit control missing role data attribute")
+	}
+	// Same lesson as the rooms Edit button: assert the script exists, not only the markup.
+	if !strings.Contains(body, "getElementById('u-original')") {
+		t.Error("admin page renders the access Edit button but not the script that makes it work")
+	}
+	// No password/hash of any kind may ride along in the data attributes.
+	for _, u := range s.cfg.Load().Users {
+		if u.PasswordSHA256 != "" && strings.Contains(body, u.PasswordSHA256) {
+			t.Fatalf("Edit data attributes must never carry a password hash (user %q)", u.Username)
+		}
+	}
+}

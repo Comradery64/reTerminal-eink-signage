@@ -154,7 +154,11 @@ func (s *Server) handleAdminSaveRoom(w http.ResponseWriter, r *http.Request) {
 	newCfg, err := cfg.WithRoom(room)
 	if err != nil {
 		s.log.Error("admin room save rejected", "device", deviceID, "err", err)
-		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error()), http.StatusSeeOther)
+		// #rooms: without it, a validation error (e.g. the duplicate-label rule) lands the admin
+		// at the top of the page with the "Add or edit a room" form collapsed again — every other
+		// error path on this page (the probe rejection two call sites up, every other section's
+		// save handler) already carries its section anchor.
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#rooms", http.StatusSeeOther)
 		return
 	}
 	// A room rename (device_id changed) needs the old entry removed too.
@@ -825,17 +829,19 @@ they can see and do — manager gets status plus wake-mode control, viewer gets 
 {{range .View.Users}}
 <tr>
 <td class="mono">{{.Username}}</td><td>{{.Role}}</td>
-<td>{{if eq .Username $me}}<span class="mono" title="You can't revoke your own account">(you)</span>{{else}}<form method="POST" action="/admin/access/delete" style="display:inline">
+<td><button type="button" class="linklike" data-edit-user
+  data-username="{{.Username}}" data-role="{{.Role}}">Edit</button>
+{{if eq .Username $me}}<span class="mono" title="You can't revoke your own account">(you)</span>{{else}}<form method="POST" action="/admin/access/delete" style="display:inline">
 <input type="hidden" name="username" value="{{.Username}}">
 <button type="submit" class="danger" onclick="return confirm('Revoke access for {{.Username}}?')">Revoke</button>
 </form>{{end}}</td>
 </tr>
 {{end}}
 </table>
-<details class="surface add-room">
+<details class="surface add-room" id="access-form">
 <summary>Grant or edit access</summary>
 <form method="POST" action="/admin/access/save">
-<input type="hidden" name="original_username" value="">
+<input type="hidden" id="u-original" name="original_username" value="">
 <label for="u-username">Username</label><input id="u-username" type="text" name="username" required>
 <label for="u-role">Role</label>
 <select id="u-role" name="role">
@@ -1030,6 +1036,29 @@ document.querySelectorAll('[data-edit-room]').forEach(function (b) {
 var summary = document.querySelector('#room-form > summary');
 if (summary) summary.addEventListener('click', function () {
   if (!document.getElementById('room-form').open) document.getElementById('r-original').value = '';
+});
+</script>
+<script>
+// Per-row Edit on Access, mirroring Rooms above. Password is deliberately NOT prefilled — it
+// follows the same keep-what-exists rule server-side, and rendering a hash (or worse, inviting a
+// retyped plaintext) into the page is exactly what the room-token Edit avoids too.
+document.querySelectorAll('[data-edit-user]').forEach(function (b) {
+  b.addEventListener('click', function () {
+    var d = b.dataset;
+    document.getElementById('u-original').value = d.username;
+    document.getElementById('u-username').value = d.username;
+    document.getElementById('u-role').value = d.role;
+    var box = document.getElementById('access-form');
+    box.open = true;
+    box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    document.getElementById('u-username').focus();
+  });
+});
+// Granting a new account clears any leftover edit state, so a stale original_username can't make
+// an add silently rename-and-delete an unrelated account.
+var accessSummary = document.querySelector('#access-form > summary');
+if (accessSummary) accessSummary.addEventListener('click', function () {
+  if (!document.getElementById('access-form').open) document.getElementById('u-original').value = '';
 });
 </script>
 </body>
