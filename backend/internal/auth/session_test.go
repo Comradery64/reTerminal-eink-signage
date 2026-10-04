@@ -36,6 +36,25 @@ func TestSessionExpiry(t *testing.T) {
 	}
 }
 
+func TestRevokeByUsernameKillsAllOfThatUsersSessionsOnly(t *testing.T) {
+	s := NewSessionStore(time.Hour)
+	aliceOne := s.Create(RoleAdmin, "alice", SessionFlags{})
+	aliceTwo := s.Create(RoleAdmin, "ALICE", SessionFlags{}) // case-insensitive, same account
+	bob := s.Create(RoleManager, "bob", SessionFlags{})
+
+	s.RevokeByUsername("alice")
+
+	if _, ok := s.Check(aliceOne); ok {
+		t.Error("alice's first session must not survive RevokeByUsername(\"alice\")")
+	}
+	if _, ok := s.Check(aliceTwo); ok {
+		t.Error("alice's second session (different case) must not survive RevokeByUsername")
+	}
+	if _, ok := s.Check(bob); !ok {
+		t.Error("bob's session must survive a revoke scoped to alice")
+	}
+}
+
 func TestSessionTokensAreUnique(t *testing.T) {
 	s := NewSessionStore(time.Hour)
 	a, b := s.Create(RoleAdmin, "alice", SessionFlags{}), s.Create(RoleAdmin, "alice", SessionFlags{})

@@ -40,6 +40,16 @@ func (s *Server) handleAdminPage(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// A reset password is viewable exactly once: take() deletes it from the store on this same
+	// read, so reloading the page (or anyone who later finds this nonce in browser history) finds
+	// nothing — see password_reset.go.
+	if nonce := r.URL.Query().Get("reset"); nonce != "" {
+		if reset, ok := s.resets.take(nonce); ok {
+			data.ResetUsername = reset.username
+			data.ResetPassword = reset.password
+			w.Header().Set("Cache-Control", "no-store")
+		}
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := adminPageTmpl.Execute(w, data); err != nil {
 		s.log.Error("admin page render failed", "err", err)
@@ -619,6 +629,12 @@ type adminPageData struct {
 	// §2.2). A datalist suggests without constraining, so a genuinely new room is still typed in.
 	KnownCalendars []string
 	KnownNames     []string
+
+	// ResetUsername/ResetPassword are populated exactly once, immediately after an admin resets a
+	// user's password — see handleAdminPage's ?reset= handling and password_reset.go. Empty on
+	// every other page load, including a reload of this same one.
+	ResetUsername string
+	ResetPassword string
 }
 
 // knownRoomSuggestions returns the distinct calendar addresses and room names already configured,
@@ -823,6 +839,11 @@ from <span class="mono">idf.py build</span>.
 <h2>Access</h2>
 <p>Grant or revoke an employee's login to /admin, /manager, or /dashboard. Role controls what
 they can see and do — manager gets status plus wake-mode control, viewer gets status only.</p>
+{{if .ResetPassword}}<div class="banner banner-ok" style="margin-left:0;margin-right:0">
+Password reset for <strong>{{.ResetUsername}}</strong> — shown once, every existing session for
+this account has been signed out: <span class="mono">{{.ResetPassword}}</span><br>
+They'll be asked to set their own password on next login.
+</div>{{end}}
 <table>
 <tr><th>Username</th><th>Role</th><th></th></tr>
 {{$me := .Username}}
@@ -831,6 +852,10 @@ they can see and do — manager gets status plus wake-mode control, viewer gets 
 <td class="mono">{{.Username}}</td><td>{{.Role}}</td>
 <td><button type="button" class="linklike" data-edit-user
   data-username="{{.Username}}" data-role="{{.Role}}">Edit</button>
+<form method="POST" action="/admin/access/reset-password" style="display:inline">
+<input type="hidden" name="username" value="{{.Username}}">
+<button type="submit" class="linklike" onclick="return confirm('Reset {{.Username}}\'s password? They will be signed out everywhere and must set a new password.')">Reset password</button>
+</form>
 {{if eq .Username $me}}<span class="mono" title="You can't revoke your own account">(you)</span>{{else}}<form method="POST" action="/admin/access/delete" style="display:inline">
 <input type="hidden" name="username" value="{{.Username}}">
 <button type="submit" class="danger" onclick="return confirm('Revoke access for {{.Username}}?')">Revoke</button>

@@ -818,3 +818,81 @@ func TestAdminAccessTableOffersInlineEdit(t *testing.T) {
 		}
 	}
 }
+
+// TestAdminResetPasswordShowsOnceThenNeverAgain covers the full round trip: a reset mints a new
+// password, logs out every existing session for that account, forces a change on next login, and
+// reveals the plaintext exactly once — gone on a second load of the same page.
+func TestAdminResetPasswordShowsOnceThenNeverAgain(t *testing.T) {
+	s := testServerWithAuth(t)
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+	client := loggedInAdminClient(t, srv)
+
+	// A manager session that must NOT survive the reset below. Built as an independent *http.Client
+	// rather than via loggedInManagerClient: that helper (like loggedInAdminClient) mutates
+	// srv.Client()'s shared Jar/CheckRedirect in place, so calling both against the same server
+	// would silently hand this test's "admin" client the manager's cookie jar instead of its own.
+	managerJar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	managerClient := &http.Client{
+		Transport:     srv.Client().Transport,
+		Jar:           managerJar,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	if resp, err := managerClient.PostForm(srv.URL+"/manager/login", url.Values{"username": {testManagerUsername}, "password": {testManagerPassword}}); err != nil || resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("manager login: err=%v code=%v", err, resp.StatusCode)
+	}
+	if resp, err := managerClient.Get(srv.URL + "/manager"); err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("manager session not alive before reset: err=%v code=%v", err, resp.StatusCode)
+	}
+
+	oldHash := func() string {
+		u, _ := s.cfg.Load().UserByUsername(testManagerUsername)
+		return u.PasswordSHA256
+	}()
+
+	resp, err := client.PostForm(srv.URL+"/admin/access/reset-password", url.Values{"username": {testManagerUsername}})
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	loc := resp.Header.Get("Location")
+	if !strings.Contains(loc, "reset=") || !strings.Contains(loc, "#access") {
+		t.Fatalf("expected a redirect carrying ?reset=...#access, got %q", loc)
+	}
+
+	u, ok := s.cfg.Load().UserByUsername(testManagerUsername)
+	if !ok {
+		t.Fatal("user vanished after reset")
+	}
+	if u.PasswordSHA256 == oldHash {
+		t.Fatal("password hash did not change")
+	}
+	if !u.MustChangePassword {
+		t.Fatal("reset must force a password change on next login")
+	}
+
+	if resp, err := managerClient.Get(srv.URL + "/manager"); err != nil || resp.StatusCode == http.StatusOK {
+		t.Fatalf("manager's pre-reset session must not survive the reset: err=%v code=%v", err, resp.StatusCode)
+	}
+
+	first, err := client.Get(srv.URL + loc)
+	if err != nil || first.StatusCode != http.StatusOK {
+		t.Fatalf("GET %q: err=%v code=%v", loc, err, first.StatusCode)
+	}
+	firstBody, _ := io.ReadAll(first.Body)
+	if !strings.Contains(string(firstBody), testManagerUsername) || !strings.Contains(string(firstBody), "shown once") {
+		t.Error("first load did not reveal the reset password")
+	}
+
+	// Same URL again: the nonce was consumed on the first read, so this must show nothing.
+	second, err := client.Get(srv.URL + loc)
+	if err != nil || second.StatusCode != http.StatusOK {
+		t.Fatalf("second GET %q: err=%v code=%v", loc, err, second.StatusCode)
+	}
+	secondBody, _ := io.ReadAll(second.Body)
+	if strings.Contains(string(secondBody), "shown once") {
+		t.Fatal("reset password reveal must not survive a second page load")
+	}
+}
