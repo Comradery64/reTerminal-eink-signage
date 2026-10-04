@@ -171,6 +171,7 @@ var dashboardPageTmpl = template.Must(template.New("dashboard").Parse(`<!doctype
 <div class="nav-links">
 {{if .ShowAdmin}}<a href="/admin">Admin panel</a>{{end}}
 {{if .ShowManager}}<a href="/manager">Manager panel</a>{{end}}
+<a href="/dashboard/change-password">Change password</a>
 <form method="POST" action="/dashboard/logout"><button type="submit" class="ghost">Log out</button></form>
 </div>
 </div>
