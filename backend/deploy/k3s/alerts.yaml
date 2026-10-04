@@ -45,7 +45,7 @@ spec:
         # broker.yaml.example), which /api/v1/status and /status use for the same classification —
         # keep the two in sync so the Grafana dashboard, the status page, and this alert agree.
         - alert: DisplayStale
-          expr: md_last_seen_seconds > 3600
+          expr: md_last_seen_seconds > 25200
           for: 15m
           labels:
             severity: warning

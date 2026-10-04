@@ -77,7 +77,7 @@
       "description": "No telemetry report in over an hour (alerts.stale_after).",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
-      "targets": [{ "expr": "count(md_last_seen_seconds > 3600) OR vector(0)", "instant": true, "refId": "A" }],
+      "targets": [{ "expr": "count(md_last_seen_seconds > 25200) OR vector(0)", "instant": true, "refId": "A" }],
       "fieldConfig": {
         "defaults": {
           "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
@@ -199,7 +199,7 @@
               { "id": "unit", "value": "s" },
               { "id": "custom.cellOptions", "value": { "type": "color-background" } },
               { "id": "thresholds", "value": { "mode": "absolute", "steps": [
-                { "color": "green", "value": null }, { "color": "red", "value": 3600 }
+                { "color": "green", "value": null }, { "color": "red", "value": 25200 }
               ] } }
             ]
           },
@@ -209,7 +209,7 @@
               { "id": "unit", "value": "s" },
               { "id": "custom.cellOptions", "value": { "type": "color-background" } },
               { "id": "thresholds", "value": { "mode": "absolute", "steps": [
-                { "color": "green", "value": null }, { "color": "orange", "value": 3600 }
+                { "color": "green", "value": null }, { "color": "orange", "value": 25200 }
               ] } }
             ]
           }

@@ -42,7 +42,7 @@ alerts:
   # /etc/meeting-displays/broker.env AND change this to "${ALERT_WEBHOOK_URL}". A ${VAR} whose
   # variable is unset or empty is a startup error, so don't reference it until you've set it.
   webhook_url: ""
-  stale_after: "1h"
+  stale_after: "7h"   # must exceed the firmware 6h MAX_WAKE_INTERVAL_S clamp; see config.example.yaml
 
 firmware:
   version: ""

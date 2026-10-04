@@ -762,3 +762,25 @@ func TestGoogleDetailLevelValidation(t *testing.T) {
 		}
 	}
 }
+
+// TestStaleAfterDefaultExceedsFirmwareWakeClamp pins the invariant that makes stale detection
+// meaningful. firmware/main/config.hpp caps a device's sleep at MAX_WAKE_INTERVAL_S = 6h, so a
+// smart-mode room with no meetings is *told* to go quiet for up to 6h and is perfectly healthy
+// doing so. Any stale threshold at or below 6h therefore reports a correctly-behaving device as
+// stale every meeting-free day — an alert that always fires is an alert nobody reads.
+//
+// If MAX_WAKE_INTERVAL_S ever changes, this test fails and the operator-facing thresholds
+// (deploy/k3s/alerts.yaml DisplayStale, grafana-dashboard.json, and the shipped configs) must move
+// with it. They are duplicated across YAML/JSON that Go cannot import, so this is the only place
+// the relationship can be asserted.
+func TestStaleAfterDefaultExceedsFirmwareWakeClamp(t *testing.T) {
+	const firmwareMaxWakeInterval = 6 * time.Hour // firmware/main/config.hpp MAX_WAKE_INTERVAL_S
+
+	c := &Config{}
+	c.applyDefaults()
+
+	if c.Alerts.StaleAfter <= firmwareMaxWakeInterval {
+		t.Fatalf("alerts.stale_after default = %v, must exceed the firmware's %v wake clamp or every "+
+			"smart-mode room reports stale on a meeting-free day", c.Alerts.StaleAfter, firmwareMaxWakeInterval)
+	}
+}

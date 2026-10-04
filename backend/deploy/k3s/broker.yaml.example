@@ -95,7 +95,7 @@ data:
       # you haven't created is a startup error — the Deployment marks it optional, so the pod
       # would otherwise crashloop on a value you were told you could omit.
       webhook_url: ""
-      stale_after: "1h"   # feeds /api/v1/status; keep in sync with DisplayStale's `3600` in alerts.yaml
+      stale_after: "7h"   # feeds /api/v1/status; keep in sync with DisplayStale's `25200` in alerts.yaml
     # Fleet-wide Wi-Fi for the /admin "Add a device" provisioning wizard. The PSK stays a ${VAR}
     # reference so it lives in broker-secrets, not in this ConfigMap — MarshalForPersist restores
     # the reference before any admin save writes the config back, so the expanded value never

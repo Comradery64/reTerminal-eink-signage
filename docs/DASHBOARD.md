@@ -20,7 +20,7 @@ and the backend work each depends on.
   Grafana dashboard, provisioned via the kube-prometheus-stack sidecar convention (see the comment
   at the top of the `.yaml.example` file for how to regenerate the ConfigMap from the JSON).
 - `backend/deploy/k3s/alerts.yaml` — unchanged in behavior; a comment now points at
-  `alerts.stale_after` as the value to keep in sync with `DisplayStale`'s `3600s`.
+  `alerts.stale_after` as the value to keep in sync with `DisplayStale`'s `25200s` (7h).
 
 ## Why two, not one
 
@@ -53,8 +53,9 @@ Proposed panels, one row per device (templated on the `device` label so it scale
 without per-room edits):
 - **Battery** — `md_battery_percent` gauge + `md_battery_millivolts` as a hover detail (mirrors
   the nonlinear LiPo caveat already documented in `alerts.yaml`)
-- **Availability** — `md_last_seen_seconds`, colored (green < 15m, amber < 1h, red > 1h — matches
-  the existing `DisplayStale` alert threshold of 3600s so the dashboard and the alert agree)
+- **Availability** — `md_last_seen_seconds`, colored (green < 6h, red > 7h — matches the
+  `DisplayStale` alert threshold of 25200s so the dashboard and the alert agree). The band is wide
+  because a smart-mode room legitimately sleeps up to the firmware's 6h `MAX_WAKE_INTERVAL_S`.
 - **Last screen refresh** — `md_last_render_seconds` (shipped — see "Where things live" above)
 - **Signal** — `md_wifi_rssi_dbm`
 - **Firmware** — `md_boot_count` as a reboot-loop smell test (a device rebooting far more often

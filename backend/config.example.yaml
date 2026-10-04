@@ -61,7 +61,9 @@ alerts:
   # quick start). In production put the real URL in a Secret/env file and write "${ALERT_WEBHOOK_URL}"
   # here instead — a ${VAR} whose variable is unset is a startup error, never a silent empty value.
   webhook_url: ""
-  stale_after: "1h"          # no telemetry for this long = "stale" on /status; matches DisplayStale below
+  stale_after: "7h"          # no telemetry for this long = "stale" on /status; matches DisplayStale.
+                             # Must stay above the firmware's 6h MAX_WAKE_INTERVAL_S clamp: a smart-mode
+                             # room with no meetings is told to sleep up to 6h, and is healthy doing so.
 
 # OTA firmware rollout (optional). Leave version empty to disable. When set, the broker advertises
 # the target build to devices, which self-update if their running build differs. With `dir` set,

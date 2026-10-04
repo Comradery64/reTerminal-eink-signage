@@ -159,7 +159,7 @@ type AlertConfig struct {
 	ClearPct      int           `yaml:"clear_pct"`       // reset alert state at/above this (default 55, hysteresis)
 	MinRenotify   time.Duration `yaml:"min_renotify"`    // suppress repeat alerts within this window (default 24h)
 	WebhookURL    string        `yaml:"webhook_url"`     // Slack incoming webhook; empty = log only
-	StaleAfter    time.Duration `yaml:"stale_after"`     // no telemetry for this long = "stale" (default 1h, matches DisplayStale)
+	StaleAfter    time.Duration `yaml:"stale_after"`     // no telemetry for this long = "stale" (default 7h; must exceed firmware MAX_WAKE_INTERVAL_S of 6h)
 }
 
 type WakeConfig struct {
@@ -449,7 +449,11 @@ func (c *Config) applyDefaults() {
 		c.Alerts.MinRenotify = 24 * time.Hour
 	}
 	if c.Alerts.StaleAfter == 0 {
-		c.Alerts.StaleAfter = time.Hour
+		// 7h = the firmware's 6h MAX_WAKE_INTERVAL_S clamp plus an hour of margin for wake jitter,
+		// a Wi-Fi/TLS retry, and the broker's own poll skew. Anything <= 6h reports every smart-mode
+		// room as stale on a meeting-free day, because the device was correctly told to sleep that
+		// long. Keep in lockstep with DisplayStale in deploy/k3s/alerts.yaml and the dashboard.
+		c.Alerts.StaleAfter = 7 * time.Hour
 	}
 	if c.Telemetry.Backend == "" {
 		c.Telemetry.Backend = "memory"
