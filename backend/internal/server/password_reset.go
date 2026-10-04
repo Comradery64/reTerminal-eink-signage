@@ -32,7 +32,9 @@ type passwordResetStore struct {
 	m  map[string]*passwordReset
 }
 
-func newPasswordResetStore() *passwordResetStore { return &passwordResetStore{m: map[string]*passwordReset{}} }
+func newPasswordResetStore() *passwordResetStore {
+	return &passwordResetStore{m: map[string]*passwordReset{}}
+}
 
 func (p *passwordResetStore) put(nonce string, r *passwordReset) {
 	p.mu.Lock()
