@@ -48,6 +48,13 @@ type Server struct {
 	// resets holds a just-minted temporary password between an admin's "Reset password" click and
 	// the next /admin page load that reveals it once (see password_reset.go).
 	resets *passwordResetStore
+	// resetTokens and forgotPasswordLimiter back the "Forgot password?" email flow (see
+	// forgot_password.go) — inert unless auth.password_reset.enabled is true. emailSender is nil
+	// by default (falls back to the real SMTP relay sender); tests set it via SetEmailSender to
+	// assert on what would have been sent without ever opening a real connection.
+	resetTokens           *resetTokenStore
+	forgotPasswordLimiter *rateLimiter
+	emailSender           emailSender
 
 	// calProbe, when non-nil, is used to check that the broker can actually read a room's calendar
 	// before that room is saved (see probeCalendar in admin.go). Set via SetCalendarProbe rather
@@ -72,12 +79,14 @@ func New(cfg *config.Live, c *cache.Store, tlm *telemetry.Store, alerts *notify.
 	s := &Server{
 		now: time.Now,
 		cfg: cfg, cache: c, tlm: tlm, alerts: alerts,
-		sessions:   auth.NewSessionStore(sessionTTL),
-		persist:    persist,
-		pstate:     &persistState{},
-		provisions: newProvisionStore(),
-		resets:     newPasswordResetStore(),
-		log:        log,
+		sessions:              auth.NewSessionStore(sessionTTL),
+		persist:               persist,
+		pstate:                &persistState{},
+		provisions:            newProvisionStore(),
+		resets:                newPasswordResetStore(),
+		resetTokens:           newResetTokenStore(),
+		forgotPasswordLimiter: newRateLimiter(),
+		log:                   log,
 	}
 	s.refreshDerived(cfg.Load())
 	// Seed the strip/API with the resolved backend's identity before any write ever happens, so
@@ -218,6 +227,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /dashboard/change-password", s.requireRole(viewerUI, s.handleChangePasswordPage(viewerUI)))
 	mux.HandleFunc("POST /dashboard/change-password", s.requireRole(viewerUI, s.handleChangePasswordSubmit(viewerUI)))
 	mux.HandleFunc("GET /dashboard/verify-2fa", s.requireRole(viewerUI, s.handleTOTPVerifyPage(viewerUI)))
+
+	// Account-level, not role-level: a login grants every cookie the account's role satisfies at
+	// once (see setSessionCookies), so recovering an account isn't specific to which door it was
+	// requested from. Unauthenticated by nature — these exist specifically for someone who can't
+	// log in — and inert (404) unless auth.password_reset.enabled is true (see forgot_password.go).
+	mux.HandleFunc("GET /forgot-password", s.handleForgotPasswordPage)
+	mux.HandleFunc("POST /forgot-password", s.handleForgotPasswordSubmit)
+	mux.HandleFunc("GET /reset-password", s.handleResetWithTokenPage)
+	mux.HandleFunc("POST /reset-password", s.handleResetWithTokenSubmit)
 	mux.HandleFunc("POST /dashboard/verify-2fa", s.requireRole(viewerUI, s.handleTOTPVerifySubmit(viewerUI)))
 	mux.HandleFunc("GET /dashboard", s.requireRole(viewerUI, s.handleDashboardPage))
 	mux.HandleFunc("GET /dashboard/preview/{device_id}", s.requireRole(viewerUI, s.handleDashboardPreview))

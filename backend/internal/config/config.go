@@ -93,6 +93,35 @@ type AuthConfig struct {
 	// check that a real secrets bundle was provisioned before login is enabled, not left as an
 	// accidental default. Required (>=32 bytes) if any User is configured.
 	SessionSecret string `yaml:"session_secret"`
+
+	// PasswordReset gates the "Forgot password?" email flow. Deliberately opt-in, not inferred
+	// from whether Users carry an Email: a deployment that hasn't configured its Workspace SMTP
+	// relay allowlist (see docs) must not have this silently start trying to send mail the moment
+	// someone fills in an email address.
+	PasswordReset PasswordResetConfig `yaml:"password_reset,omitempty"`
+}
+
+// PasswordResetConfig configures the self-service "Forgot password?" email flow. All zero values
+// are safe and mean "disabled" — see Enabled.
+type PasswordResetConfig struct {
+	// Enabled must be explicitly set true. Until then, every forgot-password route behaves as
+	// though it doesn't exist (404, not just a hidden link), and no email is ever sent — this is
+	// the switch that keeps an un-provisioned deployment from attempting to reach a relay that
+	// isn't allowlisted for it yet.
+	Enabled bool `yaml:"enabled"`
+	// SMTPHost/SMTPPort address the relay, e.g. Google Workspace's smtp-relay.gmail.com:587. No
+	// credential field exists here on purpose: the relay this is designed against authenticates by
+	// source IP allowlist, not by a secret this broker would otherwise have to store.
+	SMTPHost string `yaml:"smtp_host"`
+	SMTPPort int    `yaml:"smtp_port"`
+	// FromAddress should be a dedicated alias (e.g. meeting-displays-noreply@yourdomain.com), not
+	// any person's real mailbox, so replies don't land on a human and the sender is cleanly
+	// attributable in the relay's own audit log.
+	FromAddress string `yaml:"from_address"`
+	// PublicBaseURL is the origin a mailed reset link points at, e.g.
+	// "https://displays.example.internal" — this broker has no other reliable way to know the
+	// externally-reachable address it's served behind (reverse proxies, port-forwards, etc.).
+	PublicBaseURL string `yaml:"public_base_url"`
 }
 
 // User is one named login account for the /admin, /manager, or /viewer web UIs — granting
@@ -119,6 +148,11 @@ type User struct {
 	// from the admin page (see handleTOTPSetupSubmit), not admin-set like PasswordSHA256, so one
 	// admin can never see or set another admin's 2FA secret.
 	TOTPSecret string `yaml:"totp_secret,omitempty"`
+
+	// Email is optional and only ever consulted by the "Forgot password?" flow (see
+	// auth.PasswordReset.Enabled) — a user with no Email configured simply can't use self-service
+	// recovery; every existing config keeps loading unchanged without it.
+	Email string `yaml:"email,omitempty"`
 }
 
 // FirmwareConfig drives OTA. The broker advertises Version+URL to devices via response headers;
@@ -556,6 +590,17 @@ func (c *Config) validateUsers() error {
 	}
 	if len(c.Auth.SessionSecret) < 32 {
 		return fmt.Errorf("auth.session_secret must be set (>=32 bytes) when any user is configured")
+	}
+	if c.Auth.PasswordReset.Enabled {
+		if c.Auth.PasswordReset.SMTPHost == "" || c.Auth.PasswordReset.SMTPPort == 0 {
+			return fmt.Errorf("auth.password_reset.smtp_host and smtp_port are required when password_reset.enabled is true")
+		}
+		if c.Auth.PasswordReset.FromAddress == "" {
+			return fmt.Errorf("auth.password_reset.from_address is required when password_reset.enabled is true")
+		}
+		if c.Auth.PasswordReset.PublicBaseURL == "" {
+			return fmt.Errorf("auth.password_reset.public_base_url is required when password_reset.enabled is true")
+		}
 	}
 	seenUsername := map[string]bool{}
 	hasAdmin := false
