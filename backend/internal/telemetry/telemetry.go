@@ -35,7 +35,12 @@ type state struct {
 	lastSeen     time.Time
 	lastRendered time.Time // zero until the device reports rendered=true at least once
 	roomStatus   string    // "available" | "starting_soon" | "in_meeting"; "" until first set
-	reported     bool      // true once Ingest has been called at least once (firmware telemetry
+	// expectedWake is the sleep (seconds, already clamped to firmware's range) the broker last
+	// told this device to take — 0 until its first display fetch. The per-device staleness
+	// threshold is a multiple of it, so a smart-mode room sleeping 6h and a flat room on a 10-min
+	// cycle are each judged against their own schedule.
+	expectedWake uint32
+	reported     bool // true once Ingest has been called at least once (firmware telemetry
 	// received) — distinct from having a roomStatus, which SetRoomStatus sets independently and
 	// much earlier (as soon as the poller can compute a schedule, before any device has ever
 	// phoned home). Without this, a device that's only ever gotten a room-status update — the
@@ -128,7 +133,8 @@ func (s *Store) Ingest(deviceID string, r Report, now time.Time) {
 	if r.RenderedBool {
 		lastRendered = now
 	}
-	*st = state{last: r, lastSeen: now, lastRendered: lastRendered, roomStatus: st.roomStatus, reported: true}
+	*st = state{last: r, lastSeen: now, lastRendered: lastRendered, roomStatus: st.roomStatus,
+		expectedWake: st.expectedWake, reported: true}
 	s.mu.Unlock()
 
 	// Disk I/O must never happen under the fleet-wide RWMutex above, and must never block this
@@ -264,12 +270,29 @@ func (s *Store) SetRoomStatus(deviceID, status string) {
 	s.mu.Unlock()
 }
 
+// SetExpectedWake records the sleep the broker just sent deviceID (see state.expectedWake).
+// Callers pass the firmware-clamped value; 0 is ignored (no schedule was sent).
+func (s *Store) SetExpectedWake(deviceID string, seconds uint32) {
+	if seconds == 0 {
+		return
+	}
+	s.mu.Lock()
+	st, ok := s.m[deviceID]
+	if !ok {
+		st = &state{}
+		s.m[deviceID] = st
+	}
+	st.expectedWake = seconds
+	s.mu.Unlock()
+}
+
 // Snapshot is a point-in-time read of one device's telemetry, for consumers that need
 // structured access (e.g. the status endpoint) rather than /metrics' exposition text.
 type Snapshot struct {
 	Report       Report
 	LastSeen     time.Time
 	LastRendered time.Time // zero if the device has never reported rendered=true
+	ExpectedWake uint32    // last clamped sleep sent to the device; 0 if unknown since restart
 }
 
 func (s *Store) Snapshot(deviceID string) (Snapshot, bool) {
@@ -279,7 +302,7 @@ func (s *Store) Snapshot(deviceID string) (Snapshot, bool) {
 	if !ok || !st.reported {
 		return Snapshot{}, false
 	}
-	return Snapshot{Report: st.last, LastSeen: st.lastSeen, LastRendered: st.lastRendered}, true
+	return Snapshot{Report: st.last, LastSeen: st.lastSeen, LastRendered: st.lastRendered, ExpectedWake: st.expectedWake}, true
 }
 
 // WriteMetrics emits Prometheus exposition text.
@@ -315,6 +338,17 @@ func (s *Store) WriteMetrics(w io.Writer, now time.Time) {
 	fmt.Fprintln(w, "# TYPE md_last_seen_seconds gauge")
 	for _, id := range ids {
 		fmt.Fprintf(w, "md_last_seen_seconds{device=%q}%d\n", id, int(now.Sub(s.m[id].lastSeen).Seconds()))
+	}
+
+	// The sleep each device was last told to take (firmware-clamped). Alerting compares
+	// md_last_seen_seconds against a multiple of this instead of one fleet-wide threshold.
+	// Omitted until the device's first display fetch since broker start.
+	fmt.Fprintln(w, "# HELP md_expected_wake_seconds Sleep the broker last sent this device (clamped to firmware's 60s-6h).")
+	fmt.Fprintln(w, "# TYPE md_expected_wake_seconds gauge")
+	for _, id := range ids {
+		if ew := s.m[id].expectedWake; ew > 0 {
+			fmt.Fprintf(w, "md_expected_wake_seconds{device=%q}%d\n", id, ew)
+		}
 	}
 
 	// Age since the device last actually repainted the panel (rendered=true), as opposed to

@@ -159,7 +159,7 @@ type AlertConfig struct {
 	ClearPct      int           `yaml:"clear_pct"`       // reset alert state at/above this (default 55, hysteresis)
 	MinRenotify   time.Duration `yaml:"min_renotify"`    // suppress repeat alerts within this window (default 24h)
 	WebhookURL    string        `yaml:"webhook_url"`     // Slack incoming webhook; empty = log only
-	StaleAfter    time.Duration `yaml:"stale_after"`     // no telemetry for this long = "stale" (default 1h, matches DisplayStale)
+	StaleAfter    time.Duration `yaml:"stale_after"`     // fallback stale threshold when a device's expected wake is unknown (default 1h); see status.StaleThreshold
 }
 
 type WakeConfig struct {
@@ -938,5 +938,31 @@ func secondsUntilNextBoundary(now time.Time, intervalSeconds uint32) uint32 {
 	interval := int64(intervalSeconds)
 	epoch := now.Unix() - gridOffsetSeconds
 	next := (epoch/interval + 1) * interval
-	return uint32(next + gridOffsetSeconds - now.Unix())
+	d := next + gridOffsetSeconds - now.Unix()
+	// A device that wakes a moment before its boundary (RTC drift) would otherwise be told to
+	// sleep a few seconds, which firmware clamps up to MinWakeSeconds — costing a whole extra
+	// wake one minute later. Skip to the following boundary instead.
+	if d < MinWakeSeconds && interval > MinWakeSeconds {
+		d += interval
+	}
+	return uint32(d)
+}
+
+// Firmware's wake clamp (firmware/main/config.hpp MIN_/MAX_WAKE_INTERVAL_S): whatever the broker
+// sends, a device never sleeps less than MinWakeSeconds or more than MaxWakeSeconds.
+const (
+	MinWakeSeconds = 60
+	MaxWakeSeconds = 6 * 3600
+)
+
+// ClampWakeSeconds returns the sleep a device will actually take for a next-wake value of s,
+// mirroring firmware's clamp_wake.
+func ClampWakeSeconds(s uint32) uint32 {
+	switch {
+	case s < MinWakeSeconds:
+		return MinWakeSeconds
+	case s > MaxWakeSeconds:
+		return MaxWakeSeconds
+	}
+	return s
 }

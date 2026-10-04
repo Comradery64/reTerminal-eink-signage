@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -233,5 +234,39 @@ func TestStatusEndpoints(t *testing.T) {
 	formatJSON, _ := http.Get(srv.URL + "/status?format=json")
 	if ct := formatJSON.Header.Get("Content-Type"); ct != "application/json" {
 		t.Errorf("status?format=json Content-Type = %q, want application/json", ct)
+	}
+}
+
+// The display handler records the sleep it sent, clamped as firmware will clamp it, so
+// md_expected_wake_seconds reflects what the device actually does (smart mode can send >6h).
+func TestDisplayRecordsClampedExpectedWake(t *testing.T) {
+	s := testServer()
+	s.cfg.Load().Wake.Mode = "smart"
+	s.cfg.Load().Wake.Timezone = "UTC"
+	s.cfg.Load().Wake.BusinessStartHour = 9
+	s.cfg.Load().Wake.BusinessEndHour = 18
+	now := time.Date(2026, 10, 7, 20, 0, 0, 0, time.UTC) // Wednesday evening, off-hours
+	s.now = func() time.Time { return now }
+	next := calendar.Event{Subject: "tomorrow", Start: now.Add(20 * time.Hour), End: now.Add(21 * time.Hour)}
+	s.cache.Set("rt-1", cache.Entry{ETag: `"abc123"`, Next: &next})
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/display/rt-1", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	s.tlm.Ingest("rt-1", telemetry.Report{BatteryPct: 50}, now)
+
+	sent, _ := strconv.Atoi(resp.Header.Get("X-Next-Wake"))
+	if sent <= config.MaxWakeSeconds {
+		t.Fatalf("precondition: want a raw next-wake above the 6h clamp, got %ds", sent)
+	}
+	snap, _ := s.tlm.Snapshot("rt-1")
+	if snap.ExpectedWake != config.MaxWakeSeconds {
+		t.Errorf("ExpectedWake = %d, want %d (clamped from %d)", snap.ExpectedWake, config.MaxWakeSeconds, sent)
 	}
 }

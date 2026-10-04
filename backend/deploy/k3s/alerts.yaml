@@ -40,12 +40,17 @@ spec:
           annotations:
             summary: "CRITICAL battery on display {{ $labels.device }} ({{ $value | printf \"%.0f\" }}%)"
             description: "Display {{ $labels.device }} will die imminently. Replace today."
-        # Catch units that stopped reporting (dead battery, crash, or off the network). The 3600s
-        # here should match the broker's alerts.stale_after (config.example.yaml /
-        # broker.yaml.example), which /api/v1/status and /status use for the same classification —
-        # keep the two in sync so the Grafana dashboard, the status page, and this alert agree.
+        # Catch units that stopped reporting (dead battery, crash, or off the network). Each room is
+        # judged against two of its own expected sleeps (md_expected_wake_seconds = the next-wake the
+        # broker last sent it, clamped to firmware's 60s-6h), so a smart-mode room sleeping 6h isn't
+        # flagged while a flat room on a 10-min cycle still is within ~20 min. Until a room's first
+        # check-in after a broker restart its expected sleep is unknown, so the second clause falls
+        # back to 3600s — keep that equal to the broker's alerts.stale_after. Same rule as
+        # status.StaleThreshold (/api/v1/status, /status) and the Grafana "Offline" panel.
         - alert: DisplayStale
-          expr: md_last_seen_seconds > 3600
+          expr: >-
+            (md_last_seen_seconds > on(device) 2 * md_expected_wake_seconds)
+            or (md_last_seen_seconds > 3600 unless on(device) md_expected_wake_seconds)
           for: 15m
           labels:
             severity: warning

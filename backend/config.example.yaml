@@ -61,7 +61,7 @@ alerts:
   # quick start). In production put the real URL in a Secret/env file and write "${ALERT_WEBHOOK_URL}"
   # here instead — a ${VAR} whose variable is unset is a startup error, never a silent empty value.
   webhook_url: ""
-  stale_after: "1h"          # no telemetry for this long = "stale" on /status; matches DisplayStale below
+  stale_after: "1h"          # fallback "stale" threshold, used only until a device's first check-in after restart (normally 2x its own expected sleep); matches DisplayStale's 3600s fallback
 
 # OTA firmware rollout (optional). Leave version empty to disable. When set, the broker advertises
 # the target build to devices, which self-update if their running build differs. With `dir` set,

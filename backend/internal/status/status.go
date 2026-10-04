@@ -75,7 +75,7 @@ func Build(cfg *config.Config, tlm *telemetry.Store, now time.Time) []Device {
 		}
 
 		switch {
-		case now.Sub(snap.LastSeen) > cfg.Alerts.StaleAfter:
+		case now.Sub(snap.LastSeen) > StaleThreshold(cfg, snap):
 			d.Status = "stale"
 		case snap.Report.BatteryPct > 0 && snap.Report.BatteryPct <= cfg.Alerts.LowBatteryPct:
 			d.Status = "low_battery"
@@ -85,4 +85,16 @@ func Build(cfg *config.Config, tlm *telemetry.Store, now time.Time) []Device {
 		out = append(out, d)
 	}
 	return out
+}
+
+// StaleThreshold is how long a device may go without reporting before it counts as stale: two of
+// its own expected sleeps (the clamped next-wake the broker last sent it), so a flat room on a
+// 10-min cycle and a smart room sleeping 6h are each judged against their own schedule. Falls back
+// to alerts.stale_after when the expected sleep isn't known (no display fetch since broker start).
+// Must match the DisplayStale PrometheusRule in deploy/k3s/alerts.yaml.
+func StaleThreshold(cfg *config.Config, snap telemetry.Snapshot) time.Duration {
+	if snap.ExpectedWake > 0 {
+		return 2 * time.Duration(snap.ExpectedWake) * time.Second
+	}
+	return cfg.Alerts.StaleAfter
 }

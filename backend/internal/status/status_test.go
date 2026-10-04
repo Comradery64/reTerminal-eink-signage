@@ -66,3 +66,29 @@ func TestBuildStaleOverridesLowBattery(t *testing.T) {
 		t.Errorf("status = %q, want stale (staleness should take priority)", devices[0].Status)
 	}
 }
+
+// Each device is judged against two of its own expected sleeps, not one fleet-wide threshold.
+func TestBuildStaleUsesPerDeviceExpectedWake(t *testing.T) {
+	cfg := testConfig() // stale_after fallback applies only when expected wake is unknown
+	tlm := telemetry.New()
+	now := time.Date(2026, 6, 24, 9, 0, 0, 0, time.UTC)
+
+	// rt-1: smart room told to sleep 6h, silent for 3h → fine (threshold 12h), though > stale_after.
+	tlm.SetExpectedWake("rt-1", 6*3600)
+	tlm.Ingest("rt-1", telemetry.Report{BatteryPct: 80}, now.Add(-3*time.Hour))
+	// rt-2: flat room on a 10-min cycle, silent for 25 min → stale (threshold 20 min).
+	tlm.SetExpectedWake("rt-2", 600)
+	tlm.Ingest("rt-2", telemetry.Report{BatteryPct: 80}, now.Add(-25*time.Minute))
+	// rt-3: expected wake unknown (no display fetch since restart) → stale_after fallback.
+	tlm.Ingest("rt-3", telemetry.Report{BatteryPct: 80}, now.Add(-cfg.Alerts.StaleAfter-time.Minute))
+
+	byID := map[string]Device{}
+	for _, d := range Build(cfg, tlm, now) {
+		byID[d.DeviceID] = d
+	}
+	for id, want := range map[string]string{"rt-1": "ok", "rt-2": "stale", "rt-3": "stale"} {
+		if got := byID[id].Status; got != want {
+			t.Errorf("%s status = %q, want %q", id, got, want)
+		}
+	}
+}
