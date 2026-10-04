@@ -26,7 +26,7 @@ func (s *Server) handleDisplay(w http.ResponseWriter, r *http.Request) {
 	// Snapshot once: the whole request must see one consistent config even if an admin/manager
 	// write lands concurrently mid-request.
 	cfg := s.cfg.Load()
-	now := time.Now()
+	now := s.now()
 	room, _ := cfg.RoomByDeviceID(device) // zero Room (fleet defaults) if somehow unconfigured
 	entry, ok := s.cache.Get(device)
 	if !ok || entry.ETag == "" {

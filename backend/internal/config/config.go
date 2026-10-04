@@ -841,15 +841,14 @@ func (c *Config) wakeModeFor(room Room) string {
 	return "flat"
 }
 
-// TEMPORARY (2026-07-19): weekday restriction below is disabled for weekend testing —
-// REVERT after testing by restoring `wd != time.Saturday && wd != time.Sunday &&` below.
-//
 // isBusinessHours reports whether now (any timezone) falls within the configured business
-// window in the fleet's local timezone. Shared by both wake modes so they never disagree about
-// what counts as "business hours".
+// window on a weekday in the fleet's local timezone. Weekends are off-hours all day. Shared by
+// both wake modes so they never disagree about what counts as "business hours".
 func (c *Config) isBusinessHours(now time.Time) bool {
-	h := now.In(c.Location()).Hour()
-	return h >= c.Wake.BusinessStartHour && h < c.Wake.BusinessEndHour
+	local := now.In(c.Location())
+	wd, h := local.Weekday(), local.Hour()
+	return wd != time.Saturday && wd != time.Sunday &&
+		h >= c.Wake.BusinessStartHour && h < c.Wake.BusinessEndHour
 }
 
 // NextWakeDuration returns how long device room's owner should sleep, given its effective wake

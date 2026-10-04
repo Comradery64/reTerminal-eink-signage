@@ -28,6 +28,8 @@ type Server struct {
 	sessions *auth.SessionStore
 	persist  configstore.Store // where an admin/manager write goes to become durable (see configwrite.go)
 	log      *slog.Logger
+	// now is the display handler's clock; time.Now except in tests that need a fixed weekday.
+	now func() time.Time
 
 	// writeMu serializes every admin/manager config write end-to-end (marshal -> persist ->
 	// cfg.Store -> refreshDerived — see applyConfig in configwrite.go), so two concurrent saves
@@ -62,6 +64,7 @@ type Server struct {
 // "none", explicit-mode fail-fast) so Server itself stays agnostic to Kubernetes entirely.
 func New(cfg *config.Live, c *cache.Store, tlm *telemetry.Store, alerts *notify.Manager, persist configstore.Store, log *slog.Logger) *Server {
 	s := &Server{
+		now: time.Now,
 		cfg: cfg, cache: c, tlm: tlm, alerts: alerts,
 		sessions:   auth.NewSessionStore(sessionTTL),
 		persist:    persist,

@@ -148,8 +148,9 @@ func TestDisplaySmartModeUsesCalendarState(t *testing.T) {
 	s.cfg.Load().Wake.BusinessStartHour = 0
 	s.cfg.Load().Wake.BusinessEndHour = 24 // "now" is always business hours in this test
 	s.cfg.Load().Wake.BusinessHoursSeconds = 15 * 60
-
-	now := time.Now().UTC()
+	// Pin to a Wednesday: weekends are off-hours all day, so a real clock fails this on Sat/Sun.
+	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
 	next := calendar.Event{Subject: "later", Start: now.Add(3 * time.Hour), End: now.Add(4 * time.Hour)}
 	s.cache.Set("rt-1", cache.Entry{ETag: `"abc123"`, Next: &next})
 	srv := httptest.NewServer(s.Handler())
