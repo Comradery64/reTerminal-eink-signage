@@ -19,8 +19,9 @@ and the backend work each depends on.
 - `backend/deploy/k3s/grafana-dashboard.json` + `grafana-dashboard-configmap.yaml.example` — the
   Grafana dashboard, provisioned via the kube-prometheus-stack sidecar convention (see the comment
   at the top of the `.yaml.example` file for how to regenerate the ConfigMap from the JSON).
-- `backend/deploy/k3s/alerts.yaml` — unchanged in behavior; a comment now points at
-  `alerts.stale_after` as the value to keep in sync with `DisplayStale`'s `3600s`.
+- `backend/deploy/k3s/alerts.yaml` — `DisplayStale` fires when a room misses two of its own
+  expected check-ins (`md_last_seen_seconds > 2 * md_expected_wake_seconds`), falling back to
+  3600s (= `alerts.stale_after`) until the room's first check-in after a broker restart.
 
 ## Why two, not one
 
@@ -53,8 +54,9 @@ Proposed panels, one row per device (templated on the `device` label so it scale
 without per-room edits):
 - **Battery** — `md_battery_percent` gauge + `md_battery_millivolts` as a hover detail (mirrors
   the nonlinear LiPo caveat already documented in `alerts.yaml`)
-- **Availability** — `md_last_seen_seconds`, colored (green < 15m, amber < 1h, red > 1h — matches
-  the existing `DisplayStale` alert threshold of 3600s so the dashboard and the alert agree)
+- **Availability** — `md_last_seen_seconds`, plus **Check-ins missed** =
+  `md_last_seen_seconds / md_expected_wake_seconds` (amber > 1.2, red ≥ 2 — the same two-sleep
+  rule as `DisplayStale` and `/api/v1/status`, so a 6h smart-mode sleep isn't shown as offline)
 - **Last screen refresh** — `md_last_render_seconds` (shipped — see "Where things live" above)
 - **Signal** — `md_wifi_rssi_dbm`
 - **Firmware** — `md_boot_count` as a reboot-loop smell test (a device rebooting far more often

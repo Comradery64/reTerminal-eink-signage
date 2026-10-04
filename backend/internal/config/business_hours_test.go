@@ -28,3 +28,27 @@ func TestIsBusinessHoursExcludesWeekends(t *testing.T) {
 		}
 	}
 }
+
+func TestSecondsUntilNextBoundarySkipsNearlyElapsedBoundary(t *testing.T) {
+	// Boundaries sit at gridOffsetSeconds past each interval; 1s before 14:05 UTC.
+	at := time.Date(2026, 10, 4, 14, 4, 59, 0, time.UTC)
+	if got := secondsUntilNextBoundary(at, 3600); got != 3601 {
+		t.Errorf("1s before an hourly boundary: got %ds, want 3601s (next boundary, not 1s)", got)
+	}
+	if got := secondsUntilNextBoundary(at, 600); got != 601 {
+		t.Errorf("1s before a 10-min boundary: got %ds, want 601s", got)
+	}
+	// Exactly MinWakeSeconds out is a real wait, not an early wake.
+	at = time.Date(2026, 10, 4, 14, 4, 0, 0, time.UTC)
+	if got := secondsUntilNextBoundary(at, 600); got != 60 {
+		t.Errorf("60s before a boundary: got %ds, want 60s", got)
+	}
+}
+
+func TestClampWakeSecondsMatchesFirmware(t *testing.T) {
+	for in, want := range map[uint32]uint32{1: 60, 60: 60, 3600: 3600, 21600: 21600, 68098: 21600} {
+		if got := ClampWakeSeconds(in); got != want {
+			t.Errorf("ClampWakeSeconds(%d) = %d, want %d", in, got, want)
+		}
+	}
+}

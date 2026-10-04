@@ -391,3 +391,26 @@ func TestPruneRemovesOnlyOldRows(t *testing.T) {
 	cancel()
 	tlm.Close()
 }
+
+// md_expected_wake_seconds is emitted once a display fetch recorded it, survives the telemetry
+// POST that follows (Ingest rewrites the device state), and is absent before any fetch.
+func TestExpectedWakeMetricSurvivesIngest(t *testing.T) {
+	tlm := New()
+	now := time.Date(2026, 10, 4, 14, 5, 0, 0, time.UTC)
+	tlm.Ingest("rt-a", Report{BatteryPct: 50}, now) // reported, but no fetch yet
+	tlm.SetExpectedWake("rt-b", 3600)
+	tlm.Ingest("rt-b", Report{BatteryPct: 50}, now)
+
+	var buf bytes.Buffer
+	tlm.WriteMetrics(&buf, now)
+	out := buf.String()
+	if !strings.Contains(out, `md_expected_wake_seconds{device="rt-b"}3600`) {
+		t.Errorf("missing rt-b expected wake after Ingest:\n%s", out)
+	}
+	if strings.Contains(out, `md_expected_wake_seconds{device="rt-a"}`) {
+		t.Error("rt-a has no recorded expected wake and must not emit one")
+	}
+	if snap, _ := tlm.Snapshot("rt-b"); snap.ExpectedWake != 3600 {
+		t.Errorf("Snapshot ExpectedWake = %d, want 3600", snap.ExpectedWake)
+	}
+}

@@ -73,11 +73,11 @@
     {
       "id": 6,
       "type": "stat",
-      "title": "Offline (>1h)",
-      "description": "No telemetry report in over an hour (alerts.stale_after).",
+      "title": "Offline (missed 2 check-ins)",
+      "description": "No telemetry for more than two of the room's own expected sleeps (md_expected_wake_seconds), or over alerts.stale_after (1h) when that isn't known yet. Same rule as the DisplayStale alert and /api/v1/status.",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
-      "targets": [{ "expr": "count(md_last_seen_seconds > 3600) OR vector(0)", "instant": true, "refId": "A" }],
+      "targets": [{ "expr": "count((md_last_seen_seconds > on(device) 2 * md_expected_wake_seconds) or (md_last_seen_seconds > 3600 unless on(device) md_expected_wake_seconds)) OR vector(0)", "instant": true, "refId": "A" }],
       "fieldConfig": {
         "defaults": {
           "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
@@ -118,6 +118,7 @@
         { "expr": "md_battery_percent", "format": "table", "instant": true, "refId": "battery" },
         { "expr": "md_wifi_rssi_dbm", "format": "table", "instant": true, "refId": "signal" },
         { "expr": "md_last_seen_seconds", "format": "table", "instant": true, "refId": "lastseen" },
+        { "expr": "md_last_seen_seconds / on(device) md_expected_wake_seconds", "format": "table", "instant": true, "refId": "missed" },
         { "expr": "md_last_render_seconds", "format": "table", "instant": true, "refId": "lastrender" },
         { "expr": "md_boot_count", "format": "table", "instant": true, "refId": "boots" }
       ],
@@ -130,14 +131,14 @@
           "id": "organize",
           "options": {
             "excludeByName": {
-              "Time": true, "Time 1": true, "Time 2": true, "Time 3": true, "Time 4": true, "Time 5": true,
-              "__name__": true, "__name__ 1": true, "__name__ 2": true, "__name__ 3": true, "__name__ 4": true, "__name__ 5": true,
+              "Time": true, "Time 1": true, "Time 2": true, "Time 3": true, "Time 4": true, "Time 5": true, "Time 6": true,
+              "__name__": true, "__name__ 1": true, "__name__ 2": true, "__name__ 3": true, "__name__ 4": true, "__name__ 5": true, "__name__ 6": true,
               "job": true, "instance": true, "Value #status": true
             },
             "indexByName": {
               "device": 0, "status": 1,
               "Value #battery": 2, "Value #signal": 3,
-              "Value #lastseen": 4, "Value #lastrender": 5, "Value #boots": 6
+              "Value #lastseen": 4, "Value #missed": 5, "Value #lastrender": 6, "Value #boots": 7
             },
             "renameByName": {
               "device": "Room",
@@ -145,6 +146,7 @@
               "Value #battery": "Battery %",
               "Value #signal": "Signal (dBm)",
               "Value #lastseen": "Last seen (s ago)",
+              "Value #missed": "Check-ins missed",
               "Value #lastrender": "Last refresh (s ago)",
               "Value #boots": "Boot count"
             }
@@ -195,11 +197,15 @@
           },
           {
             "matcher": { "id": "byName", "options": "Last seen (s ago)" },
+            "properties": [{ "id": "unit", "value": "s" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Check-ins missed" },
             "properties": [
-              { "id": "unit", "value": "s" },
+              { "id": "decimals", "value": 1 },
               { "id": "custom.cellOptions", "value": { "type": "color-background" } },
               { "id": "thresholds", "value": { "mode": "absolute", "steps": [
-                { "color": "green", "value": null }, { "color": "red", "value": 3600 }
+                { "color": "green", "value": null }, { "color": "orange", "value": 1.2 }, { "color": "red", "value": 2 }
               ] } }
             ]
           },

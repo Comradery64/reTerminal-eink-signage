@@ -45,6 +45,7 @@ func (s *Server) handleDisplay(w http.ResponseWriter, r *http.Request) {
 	// rendered this room. The embedded MDPF payload's own next-wake field is always 0 (see
 	// render.Render), so this header is authoritative on both 200 and 304.
 	nextWake := cfg.NextWakeDuration(room, entry.Cur, entry.Next, now)
+	s.tlm.SetExpectedWake(device, config.ClampWakeSeconds(nextWake))
 	w.Header().Set("ETag", entry.ETag)
 	setNoWake(w, nextWake)
 	s.setFirmwareHeaders(w, cfg) // OTA advertisement (sent on both 200 and 304)
