@@ -896,3 +896,99 @@ func TestAdminResetPasswordShowsOnceThenNeverAgain(t *testing.T) {
 		t.Fatal("reset password reveal must not survive a second page load")
 	}
 }
+
+// TestAdminErrorBannerSplitsPlainAndTechnicalDetail: a handler opts into the plain/technical split
+// by joining the two halves with "||" in the error string. Without the split in handleAdminPage,
+// the raw "plain||technical" string renders verbatim in the banner instead of the plain sentence
+// plus a collapsed technical-details toggle.
+func TestAdminErrorBannerSplitsPlainAndTechnicalDetail(t *testing.T) {
+	s := testServerWithAuth(t)
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+	client := loggedInAdminClient(t, srv)
+
+	resp, err := client.Get(srv.URL + "/admin?error=" + url.QueryEscape("Ask an admin for help.||raw technical detail xyz"))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /admin: err=%v code=%v", err, resp.StatusCode)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	body := string(raw)
+
+	if !strings.Contains(body, "Ask an admin for help.") {
+		t.Error("plain-language half of the error did not render")
+	}
+	if strings.Contains(body, "Ask an admin for help.||raw technical detail xyz") {
+		t.Fatal("error banner rendered the raw, unsplit string instead of splitting on ||")
+	}
+	if !strings.Contains(body, "Show technical details") {
+		t.Error("technical-detail toggle did not render")
+	}
+	if !strings.Contains(body, "raw technical detail xyz") {
+		t.Error("technical half of the error is missing from the page")
+	}
+}
+
+// TestAdminSaveRoomUnreadableCalendarErrorIsPlainLanguageFirst locks in the actual content
+// requirement, not just the mechanism: the lead sentence a non-technical admin sees must be
+// actionable on its own, with "freeBusyReader" demoted behind the toggle rather than up front.
+func TestAdminSaveRoomUnreadableCalendarErrorIsPlainLanguageFirst(t *testing.T) {
+	s := testServerWithAuth(t)
+	s.SetCalendarProbe(failingProbe{})
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+	client := loggedInAdminClient(t, srv)
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+	resp, err := client.PostForm(srv.URL+"/admin/rooms/save", url.Values{
+		"device_id": {"rt-new"}, "name": {"New"},
+		"room": {"never-shared@example.com"}, "token": {"tok-new"},
+	})
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	loc := resp.Header.Get("Location")
+	parsed, err := url.Parse(loc)
+	if err != nil {
+		t.Fatalf("parse redirect location %q: %v", loc, err)
+	}
+	errMsg := parsed.Query().Get("error")
+	plain, technical, found := strings.Cut(errMsg, "||")
+	if !found {
+		t.Fatalf("probeCalendar error does not carry a technical-detail half: %q", errMsg)
+	}
+	if strings.Contains(strings.ToLower(plain), "freebusyreader") {
+		t.Errorf("plain-language half still names freeBusyReader, want it demoted to the technical half: %q", plain)
+	}
+	if technical == "" {
+		t.Error("technical half is empty")
+	}
+}
+
+// TestAdminPageRendersFormPreservationScript checks the sessionStorage round-trip script is wired
+// up and explicitly excludes credential-bearing fields by name. This cannot exercise the actual
+// browser behavior (sessionStorage needs a real DOM) — see the rooms Edit button's own history for
+// why markup-only assertions aren't the full story, but a server-rendered admin page has no other
+// way to guard this short of a real browser, which this environment doesn't have available.
+func TestAdminPageRendersFormPreservationScript(t *testing.T) {
+	s := testServerWithAuth(t)
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+	client := loggedInAdminClient(t, srv)
+
+	resp, err := client.Get(srv.URL + "/admin")
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /admin: err=%v code=%v", err, resp.StatusCode)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	body := string(raw)
+
+	if !strings.Contains(body, `form[action$="/save"]`) {
+		t.Error("form-preservation script is not scoped to save forms")
+	}
+	if !strings.Contains(body, "sessionStorage.setItem") || !strings.Contains(body, "sessionStorage.getItem") {
+		t.Error("form-preservation script's save/restore round trip is missing")
+	}
+	if !strings.Contains(body, "SKIP_NAMES = ['token', 'password']") {
+		t.Error("form-preservation script does not exclude token/password fields by name")
+	}
+}
