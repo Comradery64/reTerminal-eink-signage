@@ -22,9 +22,11 @@ import (
 
 func (s *Server) handleAdminPage(w http.ResponseWriter, r *http.Request) {
 	cfg := s.cfg.Load()
+	errorPlain, errorDetail, _ := strings.Cut(r.URL.Query().Get("error"), "||")
 	data := adminPageData{
 		View:         admin.Build(cfg),
-		Error:        r.URL.Query().Get("error"),
+		Error:        errorPlain,
+		ErrorDetail:  errorDetail,
 		SavedSection: r.URL.Query().Get("saved"),
 		PersistStrip: s.persistStrip(),
 		WebToolsURL:  template.URL(cfg.Firmware.WebToolsURL),
@@ -611,8 +613,14 @@ func formDuration(r *http.Request, key string) time.Duration {
 }
 
 type adminPageData struct {
-	View         admin.View
+	View admin.View
+	// Error is the plain-language lead sentence a non-technical admin can act on. ErrorDetail is
+	// everything else — the original wording, kept behind a "Show technical details" toggle rather
+	// than dropped, for whoever ends up escalating this to IT. A handler opts in by joining the two
+	// with "||" (see probeCalendar); every other error message passes through Error alone and
+	// ErrorDetail stays empty, so the toggle simply doesn't render.
 	Error        string
+	ErrorDetail  string
 	SavedSection string // e.g. "rooms" — which section to flash, empty on a plain page load
 	Username     string // current session's own account — 2FA is self-service, not admin-on-admin
 	TOTPEnabled  bool
@@ -700,6 +708,8 @@ input:not([type=submit]):not([type=checkbox]), select { display: block; width: 1
 form button[type=submit]:not(.danger):not(.ghost) { margin-top: var(--space-4); }
 .add-room { margin-top: var(--space-4); padding: var(--space-4) var(--space-5); width: fit-content; }
 .add-room summary { cursor: pointer; font-weight: 600; color: var(--blue); }
+.error-detail { margin-top: var(--space-2); }
+.error-detail summary { cursor: pointer; }
 .add-room[open] summary { margin-bottom: var(--space-3); }
 @media (max-width: 46rem) {
   .layout { flex-direction: column; }
@@ -730,7 +740,9 @@ form button[type=submit]:not(.danger):not(.ghost) { margin-top: var(--space-4); 
 </nav>
 <main class="main">
 <p class="banner {{.PersistStrip.Class}}" style="margin-left:0;margin-right:0">{{.PersistStrip.Message}}</p>
-{{if .Error}}<p class="banner banner-error" style="margin-left:0;margin-right:0">{{.Error}}</p>{{end}}
+{{if .Error}}<div class="banner banner-error" style="margin-left:0;margin-right:0">{{.Error}}
+{{if .ErrorDetail}}<details class="error-detail"><summary>Show technical details</summary><p class="mono" style="font-size:var(--text-xs)">{{.ErrorDetail}}</p></details>{{end}}
+</div>{{end}}
 
 <section class="section {{if eq .SavedSection "rooms"}}flash{{end}}" id="rooms">
 <h2>Rooms</h2>
@@ -1086,6 +1098,55 @@ if (accessSummary) accessSummary.addEventListener('click', function () {
   if (!document.getElementById('access-form').open) document.getElementById('u-original').value = '';
 });
 </script>
+<script>
+// Preserve typed values across a validation-error round trip. Every section here is
+// server-rendered fresh on each load, so without this, submitting into a validation error (e.g.
+// the rooms distinct-label rule) sends the admin back to a blank form with everything retyped.
+// Token and password fields are the one deliberate exception: they must never leave this page as
+// anything other than a POST body, so they never go into sessionStorage either — skipped by name,
+// not by input type, since the room token field is deliberately type="text", not type="password".
+(function () {
+  var SKIP_NAMES = ['token', 'password'];
+  function sectionKeyFor(form) {
+    var section = form.closest('section[id]');
+    return section ? 'admin-form:' + section.id : null;
+  }
+  var forms = document.querySelectorAll('form[action$="/save"]');
+
+  forms.forEach(function (form) {
+    var key = sectionKeyFor(form);
+    if (!key) return;
+    form.addEventListener('submit', function () {
+      var data = {};
+      Array.prototype.forEach.call(form.elements, function (el) {
+        if (!el.name || SKIP_NAMES.indexOf(el.name) !== -1) return;
+        data[el.name] = el.type === 'checkbox' ? el.checked : el.value;
+      });
+      try { sessionStorage.setItem(key, JSON.stringify(data)); } catch (e) {}
+    });
+  });
+
+  var hash = window.location.hash; // e.g. "#rooms" — every save handler's redirect carries one
+  var hasError = /[?&]error=/.test(window.location.search);
+  forms.forEach(function (form) {
+    var key = sectionKeyFor(form);
+    if (!key) return;
+    var raw;
+    try { raw = sessionStorage.getItem(key); } catch (e) { raw = null; }
+    if (!raw) return;
+    sessionStorage.removeItem(key); // one-shot: consumed here, or discarded as stale on a plain load
+    if (!hasError || hash !== '#' + key.slice('admin-form:'.length)) return;
+    var data;
+    try { data = JSON.parse(raw); } catch (e) { return; }
+    Array.prototype.forEach.call(form.elements, function (el) {
+      if (!el.name || !(el.name in data)) return;
+      if (el.type === 'checkbox') { el.checked = data[el.name]; } else { el.value = data[el.name]; }
+    });
+    var details = form.closest('details');
+    if (details) details.open = true;
+  });
+})();
+</script>
 </body>
 </html>
 `))
@@ -1108,10 +1169,16 @@ func (s *Server) probeCalendar(ctx context.Context, roomEmail string) error {
 
 	now := time.Now()
 	if _, err := s.calProbe.FetchSchedule(ctx, roomEmail, now, now.Add(time.Hour)); err != nil {
-		return fmt.Errorf("saved nothing: the broker can't read calendar %q (%v). Either it hasn't "+
-			"been shared with the broker's service account as freeBusyReader, or the address is "+
-			"wrong, or Google Calendar is temporarily unreachable — check the sharing, then retry",
-			roomEmail, err)
+		// Plain-language lead sentence, "||", then the original wording — see adminPageData.Error
+		// for why. The technical half still deliberately states all three possible causes rather
+		// than guessing which one applies (the provider's error is an opaque `freebusy status %d`
+		// for all three), so demoting it behind a toggle rather than shortening it is the point.
+		return fmt.Errorf("Couldn't save: %s isn't readable by the broker yet. Ask whoever manages "+
+			"your Google Calendar to share this room with the broker, then try again.||"+
+			"could not read calendar %q (%v). Either it hasn't been shared with the broker's "+
+			"service account as freeBusyReader, or the address is wrong, or Google Calendar is "+
+			"temporarily unreachable — check the sharing, then retry",
+			roomEmail, roomEmail, err)
 	}
 	return nil
 }
