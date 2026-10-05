@@ -126,12 +126,10 @@ func main() {
 	}
 	// Fail closed: a selected channel that can't work (e.g. a VAPID key pair that doesn't match)
 	// stops startup here, instead of the first real alert silently going nowhere.
-	channels, err := srv.BuildNotifier(cfg)
-	if err != nil {
+	if err := srv.ActivateChannels(cfg); err != nil {
 		log.Error("alert channels misconfigured", "err", err)
 		os.Exit(1)
 	}
-	alerts.SetNotifier(channels)
 	go srv.RunStaleChecks(ctx, time.Minute)
 	go func() {
 		if err := srv.ListenAndServe(); err != nil {

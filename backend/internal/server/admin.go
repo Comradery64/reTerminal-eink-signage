@@ -42,6 +42,7 @@ func (s *Server) handleAdminPage(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	data.Notifications = buildNotificationsPanel(cfg, data.Username, r.URL.Query().Get("tested"))
 	// A reset password is viewable exactly once: take() deletes it from the store on this same
 	// read, so reloading the page (or anyone who later finds this nonce in browser history) finds
 	// nothing — see password_reset.go.
@@ -245,14 +246,17 @@ func (s *Server) handleAdminSaveAlerts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
-	alerts := config.AlertConfig{
-		LowBatteryPct: formInt(r, "low_battery_pct"),
-		ClearPct:      formInt(r, "clear_pct"),
-		MinRenotify:   formDuration(r, "min_renotify"),
-		StaleAfter:    formDuration(r, "stale_after"),
-		WebhookURL:    r.PostForm.Get("webhook_url"),
-	}
-	newCfg, err := s.cfg.Load().WithAlerts(alerts)
+	// Start from the live alert config and change only the thresholds on this form. Building a
+	// fresh AlertConfig here used to wipe alerts.channels and every channel secret on each save,
+	// silently turning notifications off. The webhook URL is a secret and is no longer a form
+	// field at all (see the Notifications section).
+	cfg := s.cfg.Load()
+	alerts := cfg.Alerts
+	alerts.LowBatteryPct = formInt(r, "low_battery_pct")
+	alerts.ClearPct = formInt(r, "clear_pct")
+	alerts.MinRenotify = formDuration(r, "min_renotify")
+	alerts.StaleAfter = formDuration(r, "stale_after")
+	newCfg, err := cfg.WithAlerts(alerts)
 	if err != nil {
 		s.log.Error("admin alerts save rejected", "err", err)
 		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error()), http.StatusSeeOther)
@@ -619,12 +623,13 @@ type adminPageData struct {
 	// than dropped, for whoever ends up escalating this to IT. A handler opts in by joining the two
 	// with "||" (see probeCalendar); every other error message passes through Error alone and
 	// ErrorDetail stays empty, so the toggle simply doesn't render.
-	Error        string
-	ErrorDetail  string
-	SavedSection string // e.g. "rooms" — which section to flash, empty on a plain page load
-	Username     string // current session's own account — 2FA is self-service, not admin-on-admin
-	TOTPEnabled  bool
-	PersistStrip persistStripView // standing config-persistence status, rendered on every page load
+	Error         string
+	ErrorDetail   string
+	SavedSection  string // e.g. "rooms" — which section to flash, empty on a plain page load
+	Username      string // current session's own account — 2FA is self-service, not admin-on-admin
+	TOTPEnabled   bool
+	PersistStrip  persistStripView // standing config-persistence status, rendered on every page load
+	Notifications notificationsPanel
 	// WebToolsURL is the ESP Web Tools module the "Add a device" wizard loads (config
 	// firmware.web_tools_url). Rendered as a script src, never as page text.
 	WebToolsURL template.URL
@@ -940,9 +945,32 @@ another admin's code, each account enrolls its own authenticator app.</p>
 <label for="a-clear">Clear threshold (%)</label><input id="a-clear" type="number" name="clear_pct" value="{{.View.Alerts.ClearPct}}">
 <label for="a-renotify">Minimum time between repeat alerts</label><input id="a-renotify" type="text" name="min_renotify" value="{{.View.Alerts.MinRenotify}}" placeholder="e.g. 24h">
 <label for="a-stale">Mark stale after</label><input id="a-stale" type="text" name="stale_after" value="{{.View.Alerts.StaleAfter}}" placeholder="e.g. 1h">
-<label for="a-webhook">Webhook URL</label><input id="a-webhook" type="text" name="webhook_url" value="{{.View.Alerts.WebhookURL}}">
 <button type="submit">Save alerts</button>
 </form>
+<p class="hint">Where alerts are sent is set under <a href="#notifications">Notifications</a>.</p>
+</section>
+
+<section class="section {{if eq .SavedSection "notifications"}}flash{{end}}" id="notifications">
+<h2>Notifications</h2>
+<p>Low battery, display offline, and display back online alerts go to the channels ticked here —
+one message per change, not one per check-in.</p>
+{{if .Notifications.Tested}}<p class="ok">Test sent via {{.Notifications.Tested}} — check that it arrived.</p>{{end}}
+<form method="POST" action="/admin/notifications/save">
+<table>
+<tr><th>Send alerts to</th><th>Secret on the server</th><th></th></tr>
+{{range .Notifications.Channels}}
+<tr>
+<td><label><input type="checkbox" name="channel" value="{{.Name}}" {{if .Selected}}checked{{end}} {{if not .SecretSet}}disabled{{end}}> {{.Label}}</label></td>
+<td>{{if .SecretSet}}✅ set{{else}}❌ not set <span class="hint">(<code>{{.SecretVar}}</code>)</span>{{end}}</td>
+<td>{{if .SecretSet}}<button type="submit" formaction="/admin/notifications/test" name="test_channel" value="{{.Name}}" class="linklike">Send test</button>{{end}}</td>
+</tr>
+{{end}}
+</table>
+<button type="submit">Save channels</button>
+</form>
+<p class="hint">Browser notifications: your account has them on {{.Notifications.MySubscriptions}} browser(s)
+({{.Notifications.AllSubscriptions}} across all admins and managers).
+<a href="/admin/notifications">Turn on for this browser</a>. A test only goes to your own browsers.</p>
 </section>
 
 <section class="section {{if eq .SavedSection "firmware"}}flash{{end}}" id="firmware">

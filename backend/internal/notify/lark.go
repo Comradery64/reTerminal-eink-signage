@@ -31,12 +31,12 @@ func (l *LarkWebhook) Send(ctx context.Context, m Message) error {
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.URL, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return redactURL(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := l.Client.Do(req)
 	if err != nil {
-		return err
+		return redactURL(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {

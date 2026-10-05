@@ -79,7 +79,7 @@ func decodeSubscribe(w http.ResponseWriter, r *http.Request) (subscribeRequest, 
 
 func (s *Server) handlePushSubscribe(ui roleUI) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.vapidPublicKey == "" {
+		if s.vapidKey() == "" {
 			http.Error(w, "browser notifications are not enabled on this server", http.StatusConflict)
 			return
 		}
@@ -145,7 +145,7 @@ func (s *Server) handleNotificationsPage(ui roleUI) http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_ = notificationsPageTmpl.Execute(w, notificationsView{
 			Base:           ui.homePath,
-			VAPIDPublicKey: s.vapidPublicKey,
+			VAPIDPublicKey: s.vapidKey(),
 			Devices:        len(s.cfg.Load().PushSubscriptionsFor(s.sessionUsername(ui, r))),
 		})
 	}

@@ -114,3 +114,16 @@ func TestEffectiveChannelsLegacySlack(t *testing.T) {
 		t.Errorf("no channels and no webhook = log only, got %v", got)
 	}
 }
+
+func TestLogChannelMustStandAlone(t *testing.T) {
+	c := notifyBase()
+	c.Alerts.Channels = []string{"log"}
+	if err := c.Validate(); err != nil {
+		t.Errorf("[log] alone is valid: %v", err)
+	}
+	c.Alerts.Channels = []string{"log", "slack"}
+	c.Alerts.WebhookURL = "https://hooks.slack.com/x"
+	if err := c.Validate(); err == nil {
+		t.Error("log combined with a real channel is contradictory and must be rejected")
+	}
+}

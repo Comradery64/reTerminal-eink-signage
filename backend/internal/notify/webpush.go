@@ -132,7 +132,7 @@ func (w *WebPush) sendOne(ctx context.Context, sub PushSubscription, payload []b
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, sub.Endpoint, bytes.NewReader(body))
 	if err != nil {
-		return false, err
+		return false, redactURL(err)
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set("Content-Encoding", "aes128gcm")
@@ -141,7 +141,7 @@ func (w *WebPush) sendOne(ctx context.Context, sub PushSubscription, payload []b
 	req.Header.Set("Authorization", "vapid t="+jwt+", k="+w.Keys.PublicKey())
 	resp, err := w.Client.Do(req)
 	if err != nil {
-		return false, err
+		return false, redactURL(err)
 	}
 	defer resp.Body.Close()
 	switch {
