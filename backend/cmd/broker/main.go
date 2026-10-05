@@ -92,7 +92,9 @@ func main() {
 	p := poller.New(live, prov, rend, store, tlm, log)
 	go p.Run(ctx)
 
-	alerts := notify.NewManager(cfg.Alerts.WebhookURL, cfg.Alerts.LowBatteryPct,
+	// Channels are attached once the server exists (it stores Web Push subscriptions); until
+	// then the manager only logs, and nothing can fire before the server is serving anyway.
+	alerts := notify.NewManagerWith(nil, cfg.Alerts.LowBatteryPct,
 		cfg.Alerts.ClearPct, cfg.Alerts.MinRenotify, log)
 
 	persist, err := configstore.New(configstore.Options{
@@ -122,6 +124,15 @@ func main() {
 	if !*demo {
 		srv.SetCalendarProbe(prov)
 	}
+	// Fail closed: a selected channel that can't work (e.g. a VAPID key pair that doesn't match)
+	// stops startup here, instead of the first real alert silently going nowhere.
+	channels, err := srv.BuildNotifier(cfg)
+	if err != nil {
+		log.Error("alert channels misconfigured", "err", err)
+		os.Exit(1)
+	}
+	alerts.SetNotifier(channels)
+	go srv.RunStaleChecks(ctx, time.Minute)
 	go func() {
 		if err := srv.ListenAndServe(); err != nil {
 			log.Error("http server stopped", "err", err)

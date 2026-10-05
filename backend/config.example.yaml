@@ -57,9 +57,21 @@ alerts:
   low_battery_pct: 45        # fire at/below this; 45 (not 40) gives buffer since LiPo %→V is nonlinear
   clear_pct: 55              # re-arm only after charging back above this (hysteresis)
   min_renotify: "24h"        # if still low, remind at most once per day
-  # Slack incoming webhook; empty = log only. Left empty so this file starts as-is (see the README
-  # quick start). In production put the real URL in a Secret/env file and write "${ALERT_WEBHOOK_URL}"
-  # here instead — a ${VAR} whose variable is unset is a startup error, never a silent empty value.
+  # Where alerts go (low battery, display offline, display back online). Any of:
+  #   lark    — Lark custom-bot webhook: lark_webhook_url: "${LARK_WEBHOOK_URL}"
+  #   webpush — browser notifications to admins/managers who clicked "Enable notifications" at
+  #             /admin/notifications or /manager/notifications: the webpush block below
+  #   slack   — legacy Slack incoming webhook: webhook_url
+  # Empty = legacy behavior (Slack if webhook_url is set, else log only), so this file starts as-is.
+  # Selecting a channel whose secret is unset is a startup error, never a silent fall-back.
+  channels: []
+  # lark_webhook_url: "${LARK_WEBHOOK_URL}"
+  # webpush:
+  #   vapid_public_key: "${WEBPUSH_VAPID_PUBLIC_KEY}"    # base64url, 65-byte P-256 point
+  #   vapid_private_key: "${WEBPUSH_VAPID_PRIVATE_KEY}"  # base64url, 32-byte scalar — a secret
+  #   subject: "mailto:facilities@example.com"           # contact the push services can reach
+  # Legacy Slack incoming webhook (channel "slack"). In production write "${ALERT_WEBHOOK_URL}"
+  # here — a ${VAR} whose variable is unset is a startup error, never a silent empty value.
   webhook_url: ""
   stale_after: "1h"          # fallback "stale" threshold, used only until a device's first check-in after restart (normally 2x its own expected sleep); matches DisplayStale's 3600s fallback
 
