@@ -992,3 +992,20 @@ func TestAdminPageRendersFormPreservationScript(t *testing.T) {
 		t.Error("form-preservation script does not exclude token/password fields by name")
 	}
 }
+
+// TestAdminPageHasDiscoverableChangePasswordLink mirrors the manager/dashboard checks.
+func TestAdminPageHasDiscoverableChangePasswordLink(t *testing.T) {
+	s := testServerWithAuth(t)
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+	client := loggedInAdminClient(t, srv)
+
+	resp, err := client.Get(srv.URL + "/admin")
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /admin: err=%v code=%v", err, resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `href="/admin/change-password"`) {
+		t.Error("admin page has no discoverable link to change-password")
+	}
+}

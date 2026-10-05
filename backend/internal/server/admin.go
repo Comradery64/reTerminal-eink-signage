@@ -735,6 +735,7 @@ form button[type=submit]:not(.danger):not(.ghost) { margin-top: var(--space-4); 
 <a href="#wake">Wake defaults</a>
 <a href="#alerts">Alerts</a>
 <a href="#firmware">Firmware</a>
+<a href="/admin/change-password">Change password</a>
 </div>
 <form method="POST" action="/admin/logout"><button type="submit" class="ghost">Log out</button></form>
 </nav>

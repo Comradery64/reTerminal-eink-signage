@@ -145,3 +145,22 @@ func TestManagerSaveWakePersistFailureCarriesRealReason(t *testing.T) {
 		t.Fatalf("manager page must not show the generic rejected-validation text for a persist failure")
 	}
 }
+
+// TestManagerPageHasDiscoverableChangePasswordLink: previously the only way to reach
+// /manager/change-password was knowing the URL — the user changed their own password once only
+// because someone told them the path directly.
+func TestManagerPageHasDiscoverableChangePasswordLink(t *testing.T) {
+	s := testServerWithAuth(t)
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+	client := loggedInManagerClient(t, srv)
+
+	resp, err := client.Get(srv.URL + "/manager")
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /manager: err=%v code=%v", err, resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `href="/manager/change-password"`) {
+		t.Error("manager page has no discoverable link to change-password")
+	}
+}

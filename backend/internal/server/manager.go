@@ -140,6 +140,7 @@ var managerPageTmpl = template.Must(template.New("manager").Parse(`<!doctype htm
 <div class="masthead">` + brandMark + `<h1>Room status</h1></div>
 <div class="nav-links">
 <a href="/dashboard">Dashboard</a>
+<a href="/manager/change-password">Change password</a>
 <form method="POST" action="/manager/logout"><button type="submit" class="ghost">Log out</button></form>
 </div>
 </div>

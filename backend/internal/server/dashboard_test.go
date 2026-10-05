@@ -99,3 +99,27 @@ func TestDashboardPreviewServesLastRenderedImage(t *testing.T) {
 		t.Fatalf("no poller has run in this test server, so no cached preview should exist yet: got %d", resp.StatusCode)
 	}
 }
+
+// TestDashboardPageHasDiscoverableChangePasswordLink mirrors the manager/admin check: the only
+// route to /dashboard/change-password used to be knowing the URL.
+func TestDashboardPageHasDiscoverableChangePasswordLink(t *testing.T) {
+	s := testServerWithAuth(t)
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+
+	jar, _ := cookiejar.New(nil)
+	client := srv.Client()
+	client.Jar = jar
+	if _, err := client.PostForm(srv.URL+"/dashboard/login", url.Values{"username": {testViewerUsername}, "password": {testViewerPassword}}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := client.Get(srv.URL + "/dashboard")
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /dashboard: err=%v code=%v", err, resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `href="/dashboard/change-password"`) {
+		t.Error("dashboard page has no discoverable link to change-password")
+	}
+}
