@@ -7,6 +7,7 @@ package auth
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"strings"
 	"sync"
 	"time"
 )
@@ -113,6 +114,20 @@ func (s *SessionStore) Revoke(token string) {
 	s.mu.Lock()
 	delete(s.m, token)
 	s.mu.Unlock()
+}
+
+// RevokeByUsername deletes every live session belonging to username (case-insensitive, matching
+// the rest of this codebase's username handling — see config.Validate's duplicate check), e.g.
+// when an admin resets that account's password: a stolen or still-open session shouldn't survive
+// its own password being replaced out from under it.
+func (s *SessionStore) RevokeByUsername(username string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for token, e := range s.m {
+		if strings.EqualFold(e.username, username) {
+			delete(s.m, token)
+		}
+	}
 }
 
 // newToken returns a 32-byte crypto/rand value, base64url-encoded for safe use as a cookie value.

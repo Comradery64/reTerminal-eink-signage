@@ -42,6 +42,9 @@ type Server struct {
 	// ESP Web Tools fetching them over WebSerial. In-memory and short-lived by design — each entry
 	// carries a device token and the fleet Wi-Fi PSK (see provision.go).
 	provisions *provisionStore
+	// resets holds a just-minted temporary password between an admin's "Reset password" click and
+	// the next /admin page load that reveals it once (see password_reset.go).
+	resets *passwordResetStore
 
 	// calProbe, when non-nil, is used to check that the broker can actually read a room's calendar
 	// before that room is saved (see probeCalendar in admin.go). Set via SetCalendarProbe rather
@@ -70,6 +73,7 @@ func New(cfg *config.Live, c *cache.Store, tlm *telemetry.Store, alerts *notify.
 		persist:    persist,
 		pstate:     &persistState{},
 		provisions: newProvisionStore(),
+		resets:     newPasswordResetStore(),
 		log:        log,
 	}
 	s.refreshDerived(cfg.Load())
@@ -188,6 +192,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/fleet/save", s.requireRole(adminUI, s.handleAdminSaveFleetWifi))
 	mux.HandleFunc("POST /admin/access/save", s.requireRole(adminUI, s.handleAdminSaveUser))
 	mux.HandleFunc("POST /admin/access/delete", s.requireRole(adminUI, s.handleAdminDeleteUser))
+	mux.HandleFunc("POST /admin/access/reset-password", s.requireRole(adminUI, s.handleAdminResetPassword))
 	// "Add a device" wizard. All admin-gated: the manifest and the NVS image are fetched by ESP
 	// Web Tools from the operator's own browser, so they ride the same session cookie.
 	mux.HandleFunc("GET /admin/api/provision-preflight", s.requireRole(adminUI, s.handleProvisionPreflight))
