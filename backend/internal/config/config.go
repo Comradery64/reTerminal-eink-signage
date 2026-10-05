@@ -31,6 +31,7 @@ type Config struct {
 	ConfigPersistence ConfigPersistenceConfig `yaml:"config_persistence"`
 	Rooms             []Room                  `yaml:"rooms"`
 	Users             []User                  `yaml:"users"`
+	PushSubscriptions []PushSubscription      `yaml:"push_subscriptions,omitempty"` // see notify.go in this package
 
 	// envRefs records every ${VAR} -> expanded-value substitution Load performed, so
 	// MarshalForPersist can undo them before a config ever gets written back out. Unexported: never
@@ -158,8 +159,14 @@ type AlertConfig struct {
 	LowBatteryPct int           `yaml:"low_battery_pct"` // fire at/below this percent (default 45)
 	ClearPct      int           `yaml:"clear_pct"`       // reset alert state at/above this (default 55, hysteresis)
 	MinRenotify   time.Duration `yaml:"min_renotify"`    // suppress repeat alerts within this window (default 24h)
-	WebhookURL    string        `yaml:"webhook_url"`     // Slack incoming webhook; empty = log only
+	WebhookURL    string        `yaml:"webhook_url"`     // legacy Slack incoming webhook (channel "slack"); see EffectiveChannels
 	StaleAfter    time.Duration `yaml:"stale_after"`     // fallback stale threshold when a device's expected wake is unknown (default 1h); see status.StaleThreshold
+
+	// Channels selects where alerts go: any of "lark", "webpush", "slack" (see notify.go in this
+	// package). Empty = legacy behavior: Slack if webhook_url is set, else log only.
+	Channels       []string      `yaml:"channels,omitempty"`
+	LarkWebhookURL string        `yaml:"lark_webhook_url,omitempty"` // secret: "${LARK_WEBHOOK_URL}"
+	WebPush        WebPushConfig `yaml:"webpush,omitempty"`
 }
 
 type WakeConfig struct {
@@ -387,9 +394,11 @@ func (c *Config) MarshalForPersist() ([]byte, error) {
 // adding a secret field to Config is a one-line change here rather than a silent omission.
 func (c *Config) secretFields() map[string]string {
 	return map[string]string{
-		"auth.session_secret": c.Auth.SessionSecret,
-		"alerts.webhook_url":  c.Alerts.WebhookURL,
-		"fleet.wifi_psk":      c.Fleet.WifiPSK,
+		"auth.session_secret":              c.Auth.SessionSecret,
+		"alerts.webhook_url":               c.Alerts.WebhookURL,
+		"alerts.lark_webhook_url":          c.Alerts.LarkWebhookURL,
+		"alerts.webpush.vapid_private_key": c.Alerts.WebPush.VAPIDPrivateKey,
+		"fleet.wifi_psk":                   c.Fleet.WifiPSK,
 	}
 }
 
@@ -538,7 +547,7 @@ func (c *Config) Validate() error {
 	if err := c.validateUsers(); err != nil {
 		return err
 	}
-	return nil
+	return c.validateNotify()
 }
 
 func (c *Config) validateUsers() error {
@@ -799,6 +808,8 @@ func (c *Config) clone() *Config {
 	next := *c
 	next.Rooms = append([]Room(nil), c.Rooms...)
 	next.Users = append([]User(nil), c.Users...)
+	next.Alerts.Channels = append([]string(nil), c.Alerts.Channels...)
+	next.PushSubscriptions = append([]PushSubscription(nil), c.PushSubscriptions...)
 	return &next
 }
 

@@ -30,6 +30,9 @@ type Server struct {
 	log      *slog.Logger
 	// now is the display handler's clock; time.Now except in tests that need a fixed weekday.
 	now func() time.Time
+	// vapidPublicKey is the Web Push applicationServerKey browsers subscribe with; "" when the
+	// webpush channel isn't selected (the enable-notifications page then says so).
+	vapidPublicKey string
 
 	// writeMu serializes every admin/manager config write end-to-end (marshal -> persist ->
 	// cfg.Store -> refreshDerived — see applyConfig in configwrite.go), so two concurrent saves
@@ -173,6 +176,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /dashboard/", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, viewerUI.homePath, http.StatusMovedPermanently)
 	})
+	s.registerPushRoutes(mux)
 	mux.HandleFunc("GET /admin/login", s.handleLoginPage(adminUI))
 	mux.HandleFunc("POST /admin/login", s.handleLoginSubmit(adminUI))
 	mux.HandleFunc("POST /admin/logout", s.handleLogout(adminUI))

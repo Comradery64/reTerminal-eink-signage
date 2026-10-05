@@ -189,6 +189,18 @@ spec:
             - name: SESSION_SECRET
               valueFrom:
                 secretKeyRef: { name: broker-secrets, key: session-secret, optional: true }
+            # Alert channels (alerts.channels in the ConfigMap). Optional here so a config that
+            # doesn't select a channel still starts; a config that DOES select one refuses to start
+            # without its key (fail-closed — see config.example.yaml).
+            - name: LARK_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef: { name: broker-secrets, key: lark-webhook-url, optional: true }
+            - name: WEBPUSH_VAPID_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef: { name: broker-secrets, key: webpush-vapid-public-key, optional: true }
+            - name: WEBPUSH_VAPID_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef: { name: broker-secrets, key: webpush-vapid-private-key, optional: true }
           volumeMounts:
             - name: config
               mountPath: /etc/meeting-displays/config.yaml
