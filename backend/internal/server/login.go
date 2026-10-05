@@ -109,10 +109,11 @@ func (s *Server) handleLoginPage(ui roleUI) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_ = loginPageTmpl.Execute(w, loginPageView{
-			RoleLabel: ui.label,
-			Path:      ui.loginPath,
-			Next:      r.URL.Query().Get("next"),
-			Error:     r.URL.Query().Get("error") != "",
+			RoleLabel:             ui.label,
+			Path:                  ui.loginPath,
+			Next:                  r.URL.Query().Get("next"),
+			Error:                 r.URL.Query().Get("error") != "",
+			ForgotPasswordEnabled: s.cfg.Load().Auth.PasswordReset.Enabled,
 		})
 	}
 }
@@ -402,10 +403,11 @@ button[type=submit] { width: 100%; }
 `))
 
 type loginPageView struct {
-	RoleLabel string
-	Path      string
-	Next      string
-	Error     bool
+	RoleLabel             string
+	Path                  string
+	Next                  string
+	Error                 bool
+	ForgotPasswordEnabled bool
 }
 
 var loginPageTmpl = template.Must(template.New("login").Parse(`<!doctype html>
@@ -435,6 +437,7 @@ button[type=submit] { width: 100%; }
 <input type="hidden" name="next" value="{{.Next}}">
 <button type="submit">Log in</button>
 </form>
+{{if .ForgotPasswordEnabled}}<p style="text-align:center;margin-top:var(--space-3)"><a href="/forgot-password">Forgot password?</a></p>{{end}}
 </div>
 </body>
 </html>

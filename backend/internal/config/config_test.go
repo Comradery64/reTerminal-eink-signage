@@ -762,3 +762,33 @@ func TestGoogleDetailLevelValidation(t *testing.T) {
 		}
 	}
 }
+
+// TestPasswordResetRequiresRelayFieldsWhenEnabled: the feature must fail closed at config-load
+// time if it's turned on without a place to actually send mail, rather than failing silently at
+// the first forgot-password request.
+func TestPasswordResetRequiresRelayFieldsWhenEnabled(t *testing.T) {
+	sum := sha256.Sum256([]byte("pw"))
+	base := validBase()
+	base.Users = []User{{Username: "a", PasswordSHA256: hex.EncodeToString(sum[:]), Role: "admin"}}
+	base.Auth.SessionSecret = "01234567890123456789012345678901"
+
+	disabled := base
+	if err := disabled.Validate(); err != nil {
+		t.Fatalf("password_reset disabled (default) must be valid: %v", err)
+	}
+
+	missingFields := base
+	missingFields.Auth.PasswordReset = PasswordResetConfig{Enabled: true}
+	if err := missingFields.Validate(); err == nil {
+		t.Fatal("password_reset.enabled with no smtp_host/from_address/public_base_url must be rejected")
+	}
+
+	complete := base
+	complete.Auth.PasswordReset = PasswordResetConfig{
+		Enabled: true, SMTPHost: "smtp-relay.gmail.com", SMTPPort: 587,
+		FromAddress: "noreply@example.com", PublicBaseURL: "https://displays.example.com",
+	}
+	if err := complete.Validate(); err != nil {
+		t.Fatalf("fully-configured password_reset must be valid: %v", err)
+	}
+}
