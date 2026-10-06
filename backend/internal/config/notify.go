@@ -15,6 +15,10 @@ const (
 	ChannelLark    = "lark"    // Lark custom-bot webhook — alerts.lark_webhook_url (${LARK_WEBHOOK_URL})
 	ChannelWebPush = "webpush" // browser push to subscribed admins/managers — alerts.webpush.*
 	ChannelSlack   = "slack"   // legacy Slack incoming webhook — alerts.webhook_url
+	// ChannelLog is an explicit "no channels": alerts are logged only. Needed because an empty
+	// list means legacy behavior (Slack whenever webhook_url is set), so turning every channel off
+	// in /admin must be expressible without deleting the webhook's ${VAR} reference.
+	ChannelLog = "log"
 )
 
 // WebPushConfig is the VAPID identity the broker signs pushes with. The private key is a secret
@@ -75,8 +79,12 @@ func (c *Config) validateNotify() error {
 			if err := requireHTTPS("alerts.webhook_url", a.WebhookURL); err != nil {
 				return fmt.Errorf("alerts.channels selects slack: %w", err)
 			}
+		case ChannelLog:
+			if len(a.Channels) != 1 {
+				return fmt.Errorf("alerts.channels: \"log\" means no channels and can't be combined with others")
+			}
 		default:
-			return fmt.Errorf("alerts.channels: unknown channel %q (want lark, webpush, or slack)", ch)
+			return fmt.Errorf("alerts.channels: unknown channel %q (want lark, webpush, slack, or log)", ch)
 		}
 	}
 	for i, s := range c.PushSubscriptions {

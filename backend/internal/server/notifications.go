@@ -10,33 +10,59 @@ import (
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/status"
 )
 
-// BuildNotifier turns cfg's selected alert channels into one notify.Notifier (nil = log only).
-// It errors — and main refuses to start — when a selected channel can't actually work, e.g. a
-// VAPID private key that doesn't match its public key. config.Validate has already rejected a
-// selected channel whose secret is unset.
-func (s *Server) BuildNotifier(cfg *config.Config) (notify.Notifier, error) {
+// buildChannels turns the named channels into one notify.Notifier (nil = log only) plus the
+// Web Push public key to advertise ("" if webpush isn't among them). Pure: it changes nothing, so
+// /admin can validate a selection before saving it, and "send test" can build a single channel.
+// subs is where Web Push reads subscriptions from (the whole fleet's, or one admin's for a test).
+// It errors when a channel can't actually work, e.g. a VAPID private key that doesn't match its
+// public key; config.Validate has already rejected a channel whose secret is unset.
+func buildChannels(cfg *config.Config, channels []string, subs notify.PushSubscriptions) (notify.Notifier, string, error) {
 	var out notify.Multi
-	for _, ch := range cfg.Alerts.EffectiveChannels() {
+	vapid := ""
+	for _, ch := range channels {
 		switch ch {
 		case config.ChannelLark:
 			out = append(out, notify.NewLarkWebhook(cfg.Alerts.LarkWebhookURL))
 		case config.ChannelSlack:
 			out = append(out, notify.NewSlackWebhook(cfg.Alerts.WebhookURL))
+		case config.ChannelLog:
+			// explicit "no channels": nothing to build, alerts are logged only
 		case config.ChannelWebPush:
 			keys, err := notify.ParseVAPIDKeys(cfg.Alerts.WebPush.VAPIDPublicKey, cfg.Alerts.WebPush.VAPIDPrivateKey)
 			if err != nil {
-				return nil, fmt.Errorf("alerts.webpush: %w", err)
+				return nil, "", fmt.Errorf("alerts.webpush: %w", err)
 			}
-			s.vapidPublicKey = keys.PublicKey()
-			out = append(out, notify.NewWebPush(keys, cfg.Alerts.WebPush.Subject, s))
+			vapid = keys.PublicKey()
+			out = append(out, notify.NewWebPush(keys, cfg.Alerts.WebPush.Subject, subs))
 		default:
-			return nil, fmt.Errorf("alerts.channels: unknown channel %q", ch)
+			return nil, "", fmt.Errorf("alerts.channels: unknown channel %q", ch)
 		}
 	}
 	if len(out) == 0 {
-		return nil, nil
+		return nil, "", nil
 	}
-	return out, nil
+	return out, vapid, nil
+}
+
+// ActivateChannels makes cfg's selected channels the live alert destinations — at startup (main
+// exits if it errors: fail closed) and after an /admin channel change.
+func (s *Server) ActivateChannels(cfg *config.Config) error {
+	n, vapid, err := buildChannels(cfg, cfg.Alerts.EffectiveChannels(), s)
+	if err != nil {
+		return err
+	}
+	s.derivedMu.Lock()
+	s.vapidPublicKey = vapid
+	s.derivedMu.Unlock()
+	s.alerts.SetNotifier(n)
+	return nil
+}
+
+// vapidKey is the applicationServerKey browsers subscribe with; "" when webpush is off.
+func (s *Server) vapidKey() string {
+	s.derivedMu.RLock()
+	defer s.derivedMu.RUnlock()
+	return s.vapidPublicKey
 }
 
 // PushSubscriptions implements notify.PushSubscriptions from the live config.

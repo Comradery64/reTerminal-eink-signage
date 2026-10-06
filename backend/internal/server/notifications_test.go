@@ -36,38 +36,45 @@ func browserKeys(t *testing.T) (p256dh, authSecret string) {
 }
 
 // Only the selected channels are built; nothing selected = log only; a mismatched VAPID pair
-// refuses to build (main exits on that error).
-func TestBuildNotifierGatesOnSelectedChannels(t *testing.T) {
+// refuses to activate (main exits on that error). ActivateChannels also sets/clears the
+// advertised VAPID key with the selection.
+func TestActivateChannelsGatesOnSelectedChannels(t *testing.T) {
 	s := testServerWithAuth(t)
 	cfg := s.cfg.Load()
 
-	n, err := s.BuildNotifier(cfg)
-	if err != nil || n != nil {
-		t.Fatalf("no channels: want nil notifier (log only), got %v, %v", n, err)
+	if err := s.ActivateChannels(cfg); err != nil || s.alerts.Notifier().Name() != "log" {
+		t.Fatalf("no channels: want log only, got %s, %v", s.alerts.Notifier().Name(), err)
 	}
 
 	lark := *cfg
 	lark.Alerts.Channels = []string{"lark"}
 	lark.Alerts.LarkWebhookURL = "https://open.larksuite.com/open-apis/bot/v2/hook/x"
-	if n, _ := s.BuildNotifier(&lark); n == nil || n.Name() != "lark" {
-		t.Fatalf("lark only: got %v", n)
+	if err := s.ActivateChannels(&lark); err != nil || s.alerts.Notifier().Name() != "lark" {
+		t.Fatalf("lark only: got %s, %v", s.alerts.Notifier().Name(), err)
 	}
-	if s.vapidPublicKey != "" {
+	if s.vapidKey() != "" {
 		t.Error("webpush not selected, so no applicationServerKey must be advertised")
 	}
 
 	both := lark
 	both.Alerts.Channels = []string{"lark", "webpush"}
 	both.Alerts.WebPush = vapidConfig(t)
-	if n, _ := s.BuildNotifier(&both); n == nil || n.Name() != "lark+webpush" {
-		t.Fatalf("lark+webpush: got %v", n)
+	if err := s.ActivateChannels(&both); err != nil || s.alerts.Notifier().Name() != "lark+webpush" || s.vapidKey() == "" {
+		t.Fatalf("lark+webpush: got %s key=%q %v", s.alerts.Notifier().Name(), s.vapidKey(), err)
 	}
 
 	bad := both
 	other := vapidConfig(t)
 	bad.Alerts.WebPush.VAPIDPrivateKey = other.VAPIDPrivateKey
-	if _, err := s.BuildNotifier(&bad); err == nil {
-		t.Fatal("a VAPID private key from another pair must fail the build")
+	if err := s.ActivateChannels(&bad); err == nil {
+		t.Fatal("a VAPID private key from another pair must fail activation")
+	}
+	if s.alerts.Notifier().Name() != "lark+webpush" {
+		t.Error("a failed activation must leave the previous channels in place")
+	}
+
+	if err := s.ActivateChannels(&lark); err != nil || s.vapidKey() != "" {
+		t.Error("turning webpush off must stop advertising its key")
 	}
 }
 

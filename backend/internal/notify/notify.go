@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -48,18 +49,30 @@ func (s *SlackWebhook) Send(ctx context.Context, m Message) error {
 	body, _ := json.Marshal(map[string]string{"text": "*" + m.Title + "*\n" + m.Text})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.URL, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return redactURL(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := s.Client.Do(req)
 	if err != nil {
-		return err
+		return redactURL(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("webhook status %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// redactURL strips the request URL from a transport error. net/http wraps failures in *url.Error,
+// whose message is `Post "<full URL>": <cause>` — and for these channels the URL is the secret
+// (a Lark or Slack webhook) or a per-browser capability (a push endpoint). Without this, a failed
+// send would print it into logs and the /admin "send test" result.
+func redactURL(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return fmt.Errorf("%s request failed: %w", ue.Op, ue.Err)
+	}
+	return err
 }
 
 // logNotifier is the fallback when no webhook is configured: alerts still surface in logs
