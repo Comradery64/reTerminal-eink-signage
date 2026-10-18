@@ -19,6 +19,8 @@ type RoomView struct {
 	WakeMode            string
 	FlatIntervalSeconds uint32
 	TokenConfigured     bool
+	Location            string // the room's own location ID; "" = uses the default
+	LocationName        string // effective location's name, for display
 }
 
 // UserView is one login account as shown on the admin Access panel. Never exposes the password
@@ -43,6 +45,10 @@ type View struct {
 	Fleet    FleetView
 	Rooms    []RoomView
 	Users    []UserView
+	// Locations are shown as configured. LarkUserEmail is a work address, not a secret; it's
+	// displayed so an admin can see who each office's alerts go to.
+	Locations       []config.Location
+	DefaultLocation string
 }
 
 // Build derives the admin view from cfg. Pure function — no I/O, no auth, safe to unit test in
@@ -56,6 +62,10 @@ func Build(cfg *config.Config) View {
 			Room:            r.Room,
 			Label:           r.Label,
 			TokenConfigured: r.TokenSHA256 != "",
+			Location:        r.Location,
+		}
+		if l, ok := cfg.LocationByID(cfg.LocationOf(r)); ok {
+			rv.LocationName = l.Name
 		}
 		if r.WakeMode != nil {
 			rv.WakeMode = *r.WakeMode
@@ -79,7 +89,9 @@ func Build(cfg *config.Config) View {
 			WifiSSID:          cfg.Fleet.WifiSSID,
 			WifiPSKConfigured: cfg.Fleet.WifiPSK != "",
 		},
-		Rooms: rooms,
-		Users: users,
+		Rooms:           rooms,
+		Users:           users,
+		Locations:       append([]config.Location(nil), cfg.Locations...),
+		DefaultLocation: cfg.DefaultLocation,
 	}
 }

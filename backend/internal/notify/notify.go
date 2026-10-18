@@ -24,6 +24,9 @@ type Message struct {
 	Text     string
 	DeviceID string
 	Room     string
+	// Location is the room's office (config Location ID): Lark DMs that location's person and
+	// browser push reaches only that location's subscribers. "" = no location routing.
+	Location string
 }
 
 // Notifier sends a Message to some external channel.
@@ -122,6 +125,15 @@ type Manager struct {
 	mu       sync.Mutex
 	state    map[string]*devState
 	stale    map[string]*devState // per-device offline latch, independent of the battery latch
+	locate   func(deviceID string) string
+}
+
+// SetLocator tells the manager how to find a device's location, so every alert it sends is routed
+// to the right office. Set by the server from the live config.
+func (m *Manager) SetLocator(f func(deviceID string) string) {
+	m.mu.Lock()
+	m.locate = f
+	m.mu.Unlock()
 }
 
 // NewManager builds the alert manager with the legacy single-channel wiring: Slack if webhookURL
@@ -271,6 +283,11 @@ func (m *Manager) EvaluateStale(deviceID, room string, stale bool, silentFor tim
 // dispatch sends asynchronously so alert delivery never blocks a device request or the checker.
 func (m *Manager) dispatch(msg Message) {
 	n := m.Notifier()
+	m.mu.Lock()
+	if msg.Location == "" && m.locate != nil {
+		msg.Location = m.locate(msg.DeviceID)
+	}
+	m.mu.Unlock()
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()

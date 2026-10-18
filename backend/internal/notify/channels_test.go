@@ -79,7 +79,7 @@ type memSubs struct {
 	removed []string
 }
 
-func (m *memSubs) PushSubscriptions() []PushSubscription {
+func (m *memSubs) PushSubscriptions(string) []PushSubscription {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]PushSubscription(nil), m.subs...)
@@ -174,34 +174,6 @@ func TestParseVAPIDKeysRejectsMismatchedPair(t *testing.T) {
 	}
 }
 
-func TestLarkWebhookChecksBodyVerdict(t *testing.T) {
-	var gotText string
-	reply := `{"code":0,"msg":"success"}`
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			MsgType string `json:"msg_type"`
-			Content struct {
-				Text string `json:"text"`
-			} `json:"content"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		gotText = body.MsgType + ":" + body.Content.Text
-		_, _ = w.Write([]byte(reply))
-	}))
-	defer ts.Close()
-	l := NewLarkWebhook(ts.URL)
-	if err := l.Send(context.Background(), Message{Title: "T", Text: "body"}); err != nil {
-		t.Fatal(err)
-	}
-	if gotText != "text:T\nbody" {
-		t.Errorf("lark payload = %q", gotText)
-	}
-	reply = `{"code":19021,"msg":"sign match fail or timestamp is not within one hour from current time"}`
-	if err := l.Send(context.Background(), Message{Title: "T"}); err == nil {
-		t.Error("HTTP 200 with a non-zero code is a rejection and must be an error")
-	}
-}
-
 type countingNotifier struct {
 	mu   sync.Mutex
 	msgs []Message
@@ -243,7 +215,7 @@ func TestEvaluateStaleHysteresis(t *testing.T) {
 // Every selected channel gets the message even if an earlier one fails.
 func TestMultiAttemptsEveryChannel(t *testing.T) {
 	a, b := &countingNotifier{}, &countingNotifier{}
-	failing := NewLarkWebhook("http://127.0.0.1:1") // refused
+	failing := NewLarkApp("cli_x", "secret", "http://127.0.0.1:1", nil) // refused
 	err := Multi{failing, a, b}.Send(context.Background(), Message{Title: "x"})
 	if err == nil || !strings.Contains(err.Error(), "lark") {
 		t.Errorf("want the lark failure attributed, got %v", err)

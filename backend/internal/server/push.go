@@ -56,6 +56,7 @@ func (s *Server) sessionUsername(ui roleUI, r *http.Request) string {
 // subscribeRequest is PushSubscription.toJSON() as the browser produces it.
 type subscribeRequest struct {
 	Endpoint string `json:"endpoint"`
+	Location string `json:"location"` // which office's alerts this browser gets; "" = every location
 	Keys     struct {
 		P256DH string `json:"p256dh"`
 		Auth   string `json:"auth"`
@@ -89,7 +90,7 @@ func (s *Server) handlePushSubscribe(ui roleUI) http.HandlerFunc {
 		}
 		user := s.sessionUsername(ui, r)
 		next, err := s.cfg.Load().WithPushSubscription(config.PushSubscription{
-			Username: user, Endpoint: req.Endpoint, P256DH: req.Keys.P256DH, Auth: req.Keys.Auth,
+			Username: user, Location: req.Location, Endpoint: req.Endpoint, P256DH: req.Keys.P256DH, Auth: req.Keys.Auth,
 			Created: time.Now().UTC().Truncate(time.Second),
 		})
 		if err != nil {
@@ -138,6 +139,7 @@ type notificationsView struct {
 	Base           string
 	VAPIDPublicKey string
 	Devices        int
+	Locations      []config.Location
 }
 
 func (s *Server) handleNotificationsPage(ui roleUI) http.HandlerFunc {
@@ -147,6 +149,7 @@ func (s *Server) handleNotificationsPage(ui roleUI) http.HandlerFunc {
 			Base:           ui.homePath,
 			VAPIDPublicKey: s.vapidKey(),
 			Devices:        len(s.cfg.Load().PushSubscriptionsFor(s.sessionUsername(ui, r))),
+			Locations:      s.cfg.Load().Locations,
 		})
 	}
 }
@@ -178,6 +181,8 @@ the <code>webpush</code> channel.</p>
 {{else}}
 <p class="muted">Your account has notifications on {{.Devices}} browser(s).</p>
 <p id="state">Checking…</p>
+{{if .Locations}}<p><label for="loc">Alerts for</label>
+<select id="loc">{{range .Locations}}<option value="{{.ID}}">{{.Name}}</option>{{end}}<option value="">Every location</option></select></p>{{end}}
 <button id="enable" hidden>Enable notifications on this browser</button>
 <button id="disable" class="secondary" hidden>Turn off on this browser</button>
 <script>
@@ -210,7 +215,8 @@ $("enable").onclick = async () => {
   try {
     const reg = await navigator.serviceWorker.ready;
     const sub = await reg.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: keyBytes(KEY)});
-    await post("/api/push/subscribe", sub.toJSON());
+    const loc = document.getElementById("loc");
+    await post("/api/push/subscribe", Object.assign(sub.toJSON(), {location: loc ? loc.value : ""}));
   } catch (e) { $("state").textContent = "Couldn't turn on notifications: " + e.message; return; }
   refresh();
 };

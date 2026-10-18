@@ -48,7 +48,8 @@ func TestActivateChannelsGatesOnSelectedChannels(t *testing.T) {
 
 	lark := *cfg
 	lark.Alerts.Channels = []string{"lark"}
-	lark.Alerts.LarkWebhookURL = "https://open.larksuite.com/open-apis/bot/v2/hook/x"
+	lark.Alerts.LarkApp = config.LarkAppConfig{AppID: "cli_x", AppSecret: "s", BaseURL: config.DefaultLarkBaseURL}
+	lark.Alerts.LarkFallbackChatID = "oc_fallback"
 	if err := s.ActivateChannels(&lark); err != nil || s.alerts.Notifier().Name() != "lark" {
 		t.Fatalf("lark only: got %s, %v", s.alerts.Notifier().Name(), err)
 	}

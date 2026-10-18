@@ -37,7 +37,7 @@ func buildNotificationsPanel(cfg *config.Config, username, tested string) notifi
 	selected := cfg.Alerts.EffectiveChannels()
 	a := cfg.Alerts
 	rows := []channelStatus{
-		{Name: config.ChannelLark, Label: "Lark", SecretSet: a.LarkWebhookURL != "", SecretVar: "LARK_WEBHOOK_URL"},
+		{Name: config.ChannelLark, Label: "Lark (DM to each location's person)", SecretSet: a.LarkApp.AppID != "" && a.LarkApp.AppSecret != "", SecretVar: "LARK_APP_SECRET"},
 		{Name: config.ChannelWebPush, Label: "Browser notifications", SecretVar: "WEBPUSH_VAPID_PUBLIC_KEY, WEBPUSH_VAPID_PRIVATE_KEY",
 			SecretSet: a.WebPush.VAPIDPublicKey != "" && a.WebPush.VAPIDPrivateKey != "" && a.WebPush.Subject != ""},
 	}
@@ -87,7 +87,7 @@ func (s *Server) handleAdminSaveNotifications(w http.ResponseWriter, r *http.Req
 		adminRedirectError(w, r, "Couldn't turn that channel on: its secret isn't set on the server.||"+err.Error(), "notifications")
 		return
 	}
-	if _, _, err := buildChannels(newCfg, newCfg.Alerts.EffectiveChannels(), s); err != nil {
+	if _, _, err := buildChannels(newCfg, newCfg.Alerts.EffectiveChannels(), s, s); err != nil {
 		adminRedirectError(w, r, "That channel's configuration doesn't work.||"+err.Error(), "notifications")
 		return
 	}
@@ -110,7 +110,7 @@ type userPushSubs struct {
 	username string
 }
 
-func (u userPushSubs) PushSubscriptions() []notify.PushSubscription {
+func (u userPushSubs) PushSubscriptions(string) []notify.PushSubscription { // a test ignores location
 	var out []notify.PushSubscription
 	for _, sub := range u.s.cfg.Load().PushSubscriptionsFor(u.username) {
 		out = append(out, notify.PushSubscription{Endpoint: sub.Endpoint, P256DH: sub.P256DH, Auth: sub.Auth})
@@ -149,11 +149,15 @@ func (s *Server) handleAdminTestNotification(w http.ResponseWriter, r *http.Requ
 		adminRedirectError(w, r, fmt.Sprintf("Can't test %s: its secret (%s) isn't set on the server.", row.Label, row.SecretVar), "notifications")
 		return
 	}
+	if ch == config.ChannelLark && cfg.Alerts.LarkFallbackChatID == "" {
+		adminRedirectError(w, r, "The Lark test here goes to the fallback group, and none is set. Use \"Send test DM\" on a location under Locations instead.", "notifications")
+		return
+	}
 	if ch == config.ChannelWebPush && panel.MySubscriptions == 0 {
 		adminRedirectError(w, r, "Turn on browser notifications for this browser first (link in this section), then test.", "notifications")
 		return
 	}
-	n, _, err := buildChannels(cfg, []string{ch}, userPushSubs{s: s, username: user})
+	n, _, err := buildChannels(cfg, []string{ch}, userPushSubs{s: s, username: user}, s)
 	if err != nil {
 		adminRedirectError(w, r, "That channel's configuration doesn't work.||"+err.Error(), "notifications")
 		return

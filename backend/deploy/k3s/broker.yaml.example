@@ -192,9 +192,9 @@ spec:
             # Alert channels (alerts.channels in the ConfigMap). Optional here so a config that
             # doesn't select a channel still starts; a config that DOES select one refuses to start
             # without its key (fail-closed — see config.example.yaml).
-            - name: LARK_WEBHOOK_URL
+            - name: LARK_APP_SECRET
               valueFrom:
-                secretKeyRef: { name: broker-secrets, key: lark-webhook-url, optional: true }
+                secretKeyRef: { name: broker-secrets, key: lark-app-secret, optional: true }
             - name: WEBPUSH_VAPID_PUBLIC_KEY
               valueFrom:
                 secretKeyRef: { name: broker-secrets, key: webpush-vapid-public-key, optional: true }
