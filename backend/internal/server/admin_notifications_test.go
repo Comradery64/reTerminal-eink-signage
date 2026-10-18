@@ -40,7 +40,8 @@ func adminGet(t *testing.T, h http.Handler, s *Server, path string) string {
 func withSecrets(t *testing.T, s *Server, larkURL string) {
 	t.Helper()
 	c := *s.cfg.Load()
-	c.Alerts.LarkWebhookURL = larkURL
+	c.Alerts.LarkApp = config.LarkAppConfig{AppID: "cli_test", AppSecret: "lark-app-secret-SECRETPART", BaseURL: larkURL}
+	c.Alerts.LarkFallbackChatID = "oc_fallback"
 	c.Alerts.WebPush = vapidConfig(t)
 	c.Alerts.WebhookURL = "https://hooks.slack.example/services/" + fakeHookSecret
 	s.cfg.Store(&c)
@@ -49,7 +50,7 @@ func withSecrets(t *testing.T, s *Server, larkURL string) {
 // Regression: saving the Alerts thresholds must not wipe channels or channel secrets.
 func TestAdminAlertsSaveKeepsChannelsAndSecrets(t *testing.T) {
 	s := testServerWithAuth(t)
-	withSecrets(t, s, "https://open.larksuite.com/open-apis/bot/v2/"+fakeHookSecret)
+	withSecrets(t, s, "https://open.larksuite.com/open-apis")
 	c := *s.cfg.Load()
 	c.Alerts.Channels = []string{"lark", "webpush"}
 	s.cfg.Store(&c)
@@ -63,7 +64,7 @@ func TestAdminAlertsSaveKeepsChannelsAndSecrets(t *testing.T) {
 	if got.LowBatteryPct != 40 {
 		t.Errorf("threshold not saved: %d", got.LowBatteryPct)
 	}
-	if strings.Join(got.Channels, ",") != "lark,webpush" || got.LarkWebhookURL == "" || got.WebPush.VAPIDPrivateKey == "" || got.WebhookURL == "" {
+	if strings.Join(got.Channels, ",") != "lark,webpush" || got.LarkApp.AppSecret == "" || got.WebPush.VAPIDPrivateKey == "" || got.WebhookURL == "" {
 		t.Errorf("alerts save wiped notification config: %+v", got.Channels)
 	}
 }
@@ -71,7 +72,7 @@ func TestAdminAlertsSaveKeepsChannelsAndSecrets(t *testing.T) {
 // The admin page shows each channel's secret as set/unset only — never a value.
 func TestAdminPageNeverRendersChannelSecrets(t *testing.T) {
 	s := testServerWithAuth(t)
-	withSecrets(t, s, "https://open.larksuite.com/open-apis/bot/v2/"+fakeHookSecret)
+	withSecrets(t, s, "https://open.larksuite.com/open-apis")
 	body := adminGet(t, s.Handler(), s, "/admin")
 	if !strings.Contains(body, `id="notifications"`) {
 		t.Fatal("Notifications section missing")
@@ -99,7 +100,7 @@ func TestAdminSaveNotificationsFailsClosedAndActivates(t *testing.T) {
 		t.Fatalf("selecting a channel without its secret must be refused: %s %v", rec.Header().Get("Location"), s.cfg.Load().Alerts.Channels)
 	}
 
-	withSecrets(t, s, "https://open.larksuite.com/open-apis/bot/v2/"+fakeHookSecret)
+	withSecrets(t, s, "https://open.larksuite.com/open-apis")
 	rec = adminPost(t, h, s, "/admin/notifications/save", url.Values{"channel": {"webpush", "lark"}})
 	if strings.Contains(rec.Header().Get("Location"), "error=") {
 		t.Fatalf("valid selection refused: %s", rec.Header().Get("Location"))
@@ -129,7 +130,7 @@ func TestAdminSaveNotificationsFailsClosedAndActivates(t *testing.T) {
 func TestAdminTestNotificationRedactsWebhook(t *testing.T) {
 	s := testServerWithAuth(t)
 	h := s.Handler()
-	withSecrets(t, s, "https://127.0.0.1:1/open-apis/bot/v2/"+fakeHookSecret) // refused
+	withSecrets(t, s, "https://127.0.0.1:1/open-apis/"+fakeHookSecret) // refused
 	rec := adminPost(t, h, s, "/admin/notifications/test", url.Values{"test_channel": {"lark"}, "channel": {"webpush"}})
 	loc, _ := url.QueryUnescape(rec.Header().Get("Location"))
 	if !strings.Contains(loc, "error=") {
@@ -144,8 +145,12 @@ func TestAdminTestNotificationSendsOneLarkMessage(t *testing.T) {
 	var mu sync.Mutex
 	var hits []string
 	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/tenant_access_token/internal") {
+			_, _ = w.Write([]byte(`{"code":0,"tenant_access_token":"t-x","expire":7200}`))
+			return
+		}
 		mu.Lock()
-		hits = append(hits, r.URL.Path)
+		hits = append(hits, r.URL.Query().Get("receive_id_type"))
 		mu.Unlock()
 		_, _ = w.Write([]byte(`{"code":0}`))
 	}))
@@ -155,14 +160,14 @@ func TestAdminTestNotificationSendsOneLarkMessage(t *testing.T) {
 	defer func() { http.DefaultTransport = orig }()
 
 	s := testServerWithAuth(t)
-	withSecrets(t, s, ts.URL+"/open-apis/bot/v2/"+fakeHookSecret)
+	withSecrets(t, s, ts.URL+"/open-apis")
 	// The checkbox values are submitted alongside the clicked test button; test_channel must win.
 	rec := adminPost(t, s.Handler(), s, "/admin/notifications/test", url.Values{"test_channel": {"lark"}, "channel": {"webpush", "lark"}})
 	if loc := rec.Header().Get("Location"); !strings.Contains(loc, "tested=lark") {
 		t.Fatalf("want success redirect, got %s", loc)
 	}
-	if len(hits) != 1 {
-		t.Errorf("want exactly one message to the (fake) Lark webhook, got %d", len(hits))
+	if len(hits) != 1 || hits[0] != "chat_id" {
+		t.Errorf("want exactly one message, to the (fake) fallback chat, got %v", hits)
 	}
 }
 
@@ -182,7 +187,7 @@ func TestAdminTestPushOnlyReachesOwnBrowsers(t *testing.T) {
 	defer func() { http.DefaultTransport = orig }()
 
 	s := testServerWithAuth(t)
-	withSecrets(t, s, "https://open.larksuite.com/open-apis/bot/v2/x")
+	withSecrets(t, s, "https://open.larksuite.com/open-apis")
 	c := s.cfg.Load()
 	for _, u := range []string{testAdminUsername, testManagerUsername} {
 		p, a := browserKeys(t)

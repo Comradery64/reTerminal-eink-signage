@@ -12,7 +12,7 @@ import (
 // indirection (see Load) and is checked fail-closed by validateNotify: selecting a channel whose
 // secret is unset is a startup error, not a silent fall-back to log-only.
 const (
-	ChannelLark    = "lark"    // Lark custom-bot webhook — alerts.lark_webhook_url (${LARK_WEBHOOK_URL})
+	ChannelLark    = "lark"    // Lark custom app: DM to each location's person — alerts.lark_app (secret ${LARK_APP_SECRET})
 	ChannelWebPush = "webpush" // browser push to subscribed admins/managers — alerts.webpush.*
 	ChannelSlack   = "slack"   // legacy Slack incoming webhook — alerts.webhook_url
 	// ChannelLog is an explicit "no channels": alerts are logged only. Needed because an empty
@@ -38,6 +38,7 @@ type WebPushConfig struct {
 // push service reports it gone (404/410).
 type PushSubscription struct {
 	Username string    `yaml:"username"`
+	Location string    `yaml:"location,omitempty"` // only this location's alerts reach it; "" = every location
 	Endpoint string    `yaml:"endpoint"`
 	P256DH   string    `yaml:"p256dh"`
 	Auth     string    `yaml:"auth"`
@@ -68,7 +69,7 @@ func (c *Config) validateNotify() error {
 		seen[ch] = true
 		switch ch {
 		case ChannelLark:
-			if err := requireHTTPS("alerts.lark_webhook_url", a.LarkWebhookURL); err != nil {
+			if err := c.validateLarkApp(); err != nil {
 				return fmt.Errorf("alerts.channels selects lark: %w", err)
 			}
 		case ChannelWebPush:
@@ -91,8 +92,13 @@ func (c *Config) validateNotify() error {
 		if err := validatePushSubscription(s); err != nil {
 			return fmt.Errorf("push_subscriptions[%d]: %w", i, err)
 		}
+		if s.Location != "" {
+			if _, ok := c.LocationByID(s.Location); !ok {
+				return fmt.Errorf("push_subscriptions[%d]: unknown location %q", i, s.Location)
+			}
+		}
 	}
-	return nil
+	return c.validateLocations()
 }
 
 func requireHTTPS(field, v string) error {
@@ -186,4 +192,178 @@ func (c *Config) PushSubscriptionsFor(username string) []PushSubscription {
 		}
 	}
 	return out
+}
+
+// ── Locations ────────────────────────────────────────────────────────────────
+
+// Location is an office/building. Each room belongs to one (Room.Location, else
+// Config.DefaultLocation), and its alerts go to that location's person as a Lark DM and to
+// browser-push subscribers who chose that location.
+type Location struct {
+	ID            string `yaml:"id"`                        // stable key, e.g. the Workspace building ID
+	Name          string `yaml:"name"`                      // shown in /admin and in alert text
+	LarkUserEmail string `yaml:"lark_user_email,omitempty"` // the person DM'd for this location's alerts
+	// LarkChatID (oc_…) is this location's own group, used instead of the global
+	// alerts.lark_fallback_chat_id when the person can't be reached. Optional.
+	LarkChatID string `yaml:"lark_chat_id,omitempty"`
+}
+
+// LarkAppConfig is the Lark custom app the broker sends as. AppID is not secret; AppSecret is
+// ("${LARK_APP_SECRET}"). BaseURL defaults to the Larksuite (global) Open API.
+type LarkAppConfig struct {
+	AppID     string `yaml:"app_id,omitempty"`
+	AppSecret string `yaml:"app_secret,omitempty"`
+	BaseURL   string `yaml:"base_url,omitempty"`
+}
+
+// DefaultLarkBaseURL is Larksuite's Open API. Feishu (mainland China) tenants use
+// https://open.feishu.cn/open-apis instead.
+const DefaultLarkBaseURL = "https://open.larksuite.com/open-apis"
+
+// LocationByID finds a location by ID.
+func (c *Config) LocationByID(id string) (Location, bool) {
+	for _, l := range c.Locations {
+		if l.ID == id {
+			return l, true
+		}
+	}
+	return Location{}, false
+}
+
+// LocationOf is the location a room's alerts route to: its own, else the default ("" when no
+// locations are configured at all).
+func (c *Config) LocationOf(room Room) string {
+	if room.Location != "" {
+		return room.Location
+	}
+	return c.DefaultLocation
+}
+
+func (c *Config) validateLocations() error {
+	seen := map[string]bool{}
+	for i, l := range c.Locations {
+		switch {
+		case l.ID == "":
+			return fmt.Errorf("locations[%d]: id is required", i)
+		case seen[l.ID]:
+			return fmt.Errorf("locations: duplicate id %q", l.ID)
+		case strings.TrimSpace(l.Name) == "":
+			return fmt.Errorf("location %q: name is required", l.ID)
+		case l.LarkUserEmail != "" && !validEmail(l.LarkUserEmail):
+			return fmt.Errorf("location %q: lark_user_email %q is not an email address", l.ID, l.LarkUserEmail)
+		case l.LarkChatID != "" && !strings.HasPrefix(l.LarkChatID, "oc_"):
+			return fmt.Errorf("location %q: lark_chat_id must be a Lark chat ID (oc_…)", l.ID)
+		}
+		seen[l.ID] = true
+	}
+	if len(c.Locations) > 0 && c.DefaultLocation == "" {
+		return fmt.Errorf("default_location is required when locations are configured (rooms without a location use it)")
+	}
+	if c.DefaultLocation != "" && !seen[c.DefaultLocation] {
+		return fmt.Errorf("default_location %q is not one of locations", c.DefaultLocation)
+	}
+	for _, r := range c.Rooms {
+		if r.Location != "" && !seen[r.Location] {
+			return fmt.Errorf("room %q: unknown location %q", r.DeviceID, r.Location)
+		}
+	}
+	return nil
+}
+
+// validateLarkApp: the app credentials must be present, and every alert must have somewhere to
+// go — each location needs a person or a chat, unless the global fallback chat is set.
+func (c *Config) validateLarkApp() error {
+	a := c.Alerts
+	if a.LarkApp.AppID == "" {
+		return fmt.Errorf("alerts.lark_app.app_id is empty")
+	}
+	if a.LarkApp.AppSecret == "" {
+		return fmt.Errorf("alerts.lark_app.app_secret is empty — set its secret (${LARK_APP_SECRET})")
+	}
+	if a.LarkApp.BaseURL != "" {
+		if err := requireHTTPS("alerts.lark_app.base_url", a.LarkApp.BaseURL); err != nil {
+			return err
+		}
+	}
+	if a.LarkFallbackChatID != "" && !strings.HasPrefix(a.LarkFallbackChatID, "oc_") {
+		return fmt.Errorf("alerts.lark_fallback_chat_id must be a Lark chat ID (oc_…)")
+	}
+	if a.LarkFallbackChatID != "" {
+		return nil
+	}
+	if len(c.Locations) == 0 {
+		return fmt.Errorf("no locations and no alerts.lark_fallback_chat_id: Lark alerts would have nowhere to go")
+	}
+	for _, l := range c.Locations {
+		if l.LarkUserEmail == "" && l.LarkChatID == "" {
+			return fmt.Errorf("location %q has no lark_user_email or lark_chat_id and alerts.lark_fallback_chat_id is unset", l.ID)
+		}
+	}
+	return nil
+}
+
+func validEmail(s string) bool {
+	at := strings.LastIndex(s, "@")
+	return at > 0 && at < len(s)-1 && !strings.ContainsAny(s, " \t<>") && strings.Contains(s[at:], ".")
+}
+
+// WithLocation returns a validated copy of c with l added or, if its ID exists, replaced. The
+// first location ever added also becomes the default, so a fresh install has a valid config.
+func (c *Config) WithLocation(l Location) (*Config, error) {
+	next := c.clone()
+	replaced := false
+	for i := range next.Locations {
+		if next.Locations[i].ID == l.ID {
+			next.Locations[i] = l
+			replaced = true
+		}
+	}
+	if !replaced {
+		next.Locations = append(next.Locations, l)
+	}
+	if next.DefaultLocation == "" {
+		next.DefaultLocation = l.ID
+	}
+	if err := next.Validate(); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+// WithoutLocation removes a location. Refused while any room or subscription still points at it,
+// or while it's the default — those must be moved first, so no alert silently loses its route.
+func (c *Config) WithoutLocation(id string) (*Config, error) {
+	if c.DefaultLocation == id && len(c.Locations) > 1 {
+		return nil, fmt.Errorf("location %q is the default; make another location the default first", id)
+	}
+	for _, r := range c.Rooms {
+		if r.Location == id {
+			return nil, fmt.Errorf("room %q is in location %q; move it first", r.DeviceID, id)
+		}
+	}
+	next := c.clone()
+	out := next.Locations[:0]
+	for _, l := range next.Locations {
+		if l.ID != id {
+			out = append(out, l)
+		}
+	}
+	next.Locations = out
+	if next.DefaultLocation == id {
+		next.DefaultLocation = ""
+	}
+	if err := next.Validate(); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+// WithDefaultLocation sets the location used by rooms that don't name one.
+func (c *Config) WithDefaultLocation(id string) (*Config, error) {
+	next := c.clone()
+	next.DefaultLocation = id
+	if err := next.Validate(); err != nil {
+		return nil, err
+	}
+	return next, nil
 }

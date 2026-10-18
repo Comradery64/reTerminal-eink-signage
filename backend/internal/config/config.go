@@ -32,6 +32,8 @@ type Config struct {
 	Rooms             []Room                  `yaml:"rooms"`
 	Users             []User                  `yaml:"users"`
 	PushSubscriptions []PushSubscription      `yaml:"push_subscriptions,omitempty"` // see notify.go in this package
+	Locations         []Location              `yaml:"locations,omitempty"`          // offices; see notify.go in this package
+	DefaultLocation   string                  `yaml:"default_location,omitempty"`   // location of rooms with no location of their own
 
 	// envRefs records every ${VAR} -> expanded-value substitution Load performed, so
 	// MarshalForPersist can undo them before a config ever gets written back out. Unexported: never
@@ -198,9 +200,10 @@ type AlertConfig struct {
 
 	// Channels selects where alerts go: any of "lark", "webpush", "slack" (see notify.go in this
 	// package). Empty = legacy behavior: Slack if webhook_url is set, else log only.
-	Channels       []string      `yaml:"channels,omitempty"`
-	LarkWebhookURL string        `yaml:"lark_webhook_url,omitempty"` // secret: "${LARK_WEBHOOK_URL}"
-	WebPush        WebPushConfig `yaml:"webpush,omitempty"`
+	Channels           []string      `yaml:"channels,omitempty"`
+	LarkApp            LarkAppConfig `yaml:"lark_app,omitempty"`              // app_secret is a secret: "${LARK_APP_SECRET}"
+	LarkFallbackChatID string        `yaml:"lark_fallback_chat_id,omitempty"` // group (oc_…) used only when a location's person can't be reached
+	WebPush            WebPushConfig `yaml:"webpush,omitempty"`
 }
 
 type WakeConfig struct {
@@ -286,6 +289,9 @@ type Room struct {
 	Name        string `yaml:"name"`
 	Room        string `yaml:"room"`
 	TokenSHA256 string `yaml:"token_sha256"`
+	// Location is the ID of the office this room is in (Config.Locations); "" = DefaultLocation.
+	// Decides who is told when this room's display needs attention.
+	Location string `yaml:"location,omitempty"`
 
 	// Label distinguishes multiple displays serving the same Room — the panel's physical
 	// position ("Door", "Interior wall"), not the room's name. Optional and empty for the
@@ -430,7 +436,7 @@ func (c *Config) secretFields() map[string]string {
 	return map[string]string{
 		"auth.session_secret":              c.Auth.SessionSecret,
 		"alerts.webhook_url":               c.Alerts.WebhookURL,
-		"alerts.lark_webhook_url":          c.Alerts.LarkWebhookURL,
+		"alerts.lark_app.app_secret":       c.Alerts.LarkApp.AppSecret,
 		"alerts.webpush.vapid_private_key": c.Alerts.WebPush.VAPIDPrivateKey,
 		"fleet.wifi_psk":                   c.Fleet.WifiPSK,
 	}
@@ -456,6 +462,9 @@ func (c *Config) warnPlaintextSecrets(fromEnv map[string]bool) {
 }
 
 func (c *Config) applyDefaults() {
+	if c.Alerts.LarkApp.AppID != "" && c.Alerts.LarkApp.BaseURL == "" {
+		c.Alerts.LarkApp.BaseURL = DefaultLarkBaseURL
+	}
 	if c.Google.DetailLevel == "" {
 		c.Google.DetailLevel = "free_busy" // least-privilege default; see GoogleConfig.DetailLevel
 	}
@@ -855,6 +864,7 @@ func (c *Config) clone() *Config {
 	next.Users = append([]User(nil), c.Users...)
 	next.Alerts.Channels = append([]string(nil), c.Alerts.Channels...)
 	next.PushSubscriptions = append([]PushSubscription(nil), c.PushSubscriptions...)
+	next.Locations = append([]Location(nil), c.Locations...)
 	return &next
 }
 

@@ -35,10 +35,11 @@ type PushSubscription struct {
 	Auth     string
 }
 
-// PushSubscriptions supplies the current subscriptions and is told when the push service reports
-// one gone (404/410), so it can be deleted instead of retried forever.
+// PushSubscriptions supplies the subscriptions that should receive an alert for a location ("" =
+// no location routing) and is told when the push service reports one gone (404/410), so it can
+// be deleted instead of retried forever.
 type PushSubscriptions interface {
-	PushSubscriptions() []PushSubscription
+	PushSubscriptions(location string) []PushSubscription
 	RemovePushSubscription(endpoint string)
 }
 
@@ -108,7 +109,7 @@ type pushPayload struct {
 func (w *WebPush) Send(ctx context.Context, m Message) error {
 	payload, _ := json.Marshal(pushPayload{Title: m.Title, Body: m.Text, Tag: m.DeviceID})
 	var errs []error
-	for _, sub := range w.Subs.PushSubscriptions() {
+	for _, sub := range w.Subs.PushSubscriptions(m.Location) {
 		gone, err := w.sendOne(ctx, sub, payload)
 		if gone {
 			w.Subs.RemovePushSubscription(sub.Endpoint)

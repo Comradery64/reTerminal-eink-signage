@@ -58,14 +58,18 @@ alerts:
   clear_pct: 55              # re-arm only after charging back above this (hysteresis)
   min_renotify: "24h"        # if still low, remind at most once per day
   # Where alerts go (low battery, display offline, display back online). Any of:
-  #   lark    — Lark custom-bot webhook: lark_webhook_url: "${LARK_WEBHOOK_URL}"
+  #   lark    — Lark custom app: DMs each location's person (see locations below); lark_app below
   #   webpush — browser notifications to admins/managers who clicked "Enable notifications" at
   #             /admin/notifications or /manager/notifications: the webpush block below
   #   slack   — legacy Slack incoming webhook: webhook_url
   # Empty = legacy behavior (Slack if webhook_url is set, else log only), so this file starts as-is.
   # Selecting a channel whose secret is unset is a startup error, never a silent fall-back.
   channels: []
-  # lark_webhook_url: "${LARK_WEBHOOK_URL}"
+  # lark_app:
+  #   app_id: "cli_xxxxxxxxxxxxxxxx"                    # not secret
+  #   app_secret: "${LARK_APP_SECRET}"                  # a secret
+  #   # base_url defaults to https://open.larksuite.com/open-apis (Feishu: https://open.feishu.cn/open-apis)
+  # lark_fallback_chat_id: "oc_xxxxxxxx"  # group used ONLY when a location's person can't be reached
   # webpush:
   #   vapid_public_key: "${WEBPUSH_VAPID_PUBLIC_KEY}"    # base64url, 65-byte P-256 point
   #   vapid_private_key: "${WEBPUSH_VAPID_PRIVATE_KEY}"  # base64url, 32-byte scalar — a secret
@@ -150,3 +154,16 @@ rooms:
     name: "Birch"
     room: "birch@example.com"
     token_sha256: "REPLACE_WITH_SHA256_OF_DEVICE_TOKEN"
+
+# Offices. Each room's alerts go to its location's person (Lark DM) and to browser-push subscribers
+# who chose that location; rooms without `location:` use default_location. Optional — without
+# locations, Lark alerts go to alerts.lark_fallback_chat_id.
+# locations:
+#   - id: "building-a"            # stable ID, e.g. the Workspace building ID
+#     name: "Main office"
+#     lark_user_email: "facilities-a@example.com"
+#     lark_chat_id: "oc_xxxxxxxx" # optional: this office's group, preferred over the global fallback
+#   - id: "building-b"
+#     name: "Second office"
+#     lark_user_email: "facilities-b@example.com"
+# default_location: "building-a"

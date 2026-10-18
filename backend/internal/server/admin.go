@@ -43,6 +43,7 @@ func (s *Server) handleAdminPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	data.Notifications = buildNotificationsPanel(cfg, data.Username, r.URL.Query().Get("tested"))
+	data.Locations = buildLocationsPanel(cfg, r.URL.Query().Get("dm"))
 	// A reset password is viewable exactly once: take() deletes it from the store on this same
 	// read, so reloading the page (or anyone who later finds this nonce in browser history) finds
 	// nothing — see password_reset.go.
@@ -136,7 +137,12 @@ func (s *Server) handleAdminSaveRoom(w http.ResponseWriter, r *http.Request) {
 		label = existing.Label
 	}
 
+	location := r.PostForm.Get("location")
+	if _, sent := r.PostForm["location"]; !sent && hasExisting {
+		location = existing.Location // older form without the field: keep the room's location
+	}
 	room := config.Room{
+		Location:            location,
 		DeviceID:            deviceID,
 		Name:                r.PostForm.Get("name"),
 		Room:                r.PostForm.Get("room"),
@@ -630,6 +636,7 @@ type adminPageData struct {
 	TOTPEnabled   bool
 	PersistStrip  persistStripView // standing config-persistence status, rendered on every page load
 	Notifications notificationsPanel
+	Locations     locationsPanel
 	// WebToolsURL is the ESP Web Tools module the "Add a device" wizard loads (config
 	// firmware.web_tools_url). Rendered as a script src, never as page text.
 	WebToolsURL template.URL
@@ -760,7 +767,7 @@ form button[type=submit]:not(.danger):not(.ghost) { margin-top: var(--space-4); 
 <td>{{if .WakeMode}}{{.WakeMode}} ({{.FlatIntervalSeconds}}s){{else}}fleet default{{end}}</td>
 <td>{{if .TokenConfigured}}configured{{else}}<em>none</em>{{end}}</td>
 <td><button type="button" class="linklike" data-edit-room
-  data-device="{{.DeviceID}}" data-name="{{.Name}}" data-room="{{.Room}}" data-label="{{.Label}}">Edit</button>
+  data-device="{{.DeviceID}}" data-name="{{.Name}}" data-room="{{.Room}}" data-label="{{.Label}}" data-location="{{.Location}}">Edit</button>
 <form method="POST" action="/admin/rooms/delete" style="display:inline">
 <input type="hidden" name="device_id" value="{{.DeviceID}}">
 <button type="submit" class="danger" onclick="return confirm('Remove {{.Name}} from the fleet? This can\'t be undone here.')">Remove</button>
@@ -779,6 +786,8 @@ form button[type=submit]:not(.danger):not(.ghost) { margin-top: var(--space-4); 
 <label for="r-room">Calendar (room email)</label><input id="r-room" type="text" name="room" list="known-calendars" required>
 <label for="r-label">Panel label (only for rooms with more than one display, e.g. "Door", "Interior wall")</label>
 <input id="r-label" type="text" name="label" placeholder="leave blank for a single-display room">
+{{if .View.Locations}}<label for="r-location">Location (who is told when this display needs attention)</label>
+<select id="r-location" name="location"><option value="">Default location</option>{{range .View.Locations}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select>{{end}}
 <label for="r-token">Device token (leave blank to keep existing)</label><input id="r-token" type="text" name="token">
 <label for="r-wake">Wake override (leave unchanged to keep existing)</label>
 <select id="r-wake" name="wake_mode_override">
@@ -950,6 +959,43 @@ another admin's code, each account enrolls its own authenticator app.</p>
 <p class="hint">Where alerts are sent is set under <a href="#notifications">Notifications</a>.</p>
 </section>
 
+<section class="section {{if eq .SavedSection "locations"}}flash{{end}}" id="locations">
+<h2>Locations</h2>
+<p>Each office has a person who gets a Lark message when one of its displays runs low or goes offline.
+If that person can't be reached, the alert goes to the office's group (if set), otherwise to the
+fallback group under Notifications — never both.</p>
+{{if .Locations.Tested}}<p class="ok">Test DM sent to {{.Locations.Tested}} — ask them to confirm it arrived.</p>{{end}}
+{{if .Locations.Rows}}
+<table>
+<tr><th>Location</th><th>Person</th><th>Group</th><th>Rooms</th><th></th></tr>
+{{range .Locations.Rows}}
+<tr>
+<td>{{.Name}} <span class="mono hint">{{.ID}}</span>{{if .Default}} <span class="hint">(default)</span>{{end}}</td>
+<td>{{if .Email}}{{.Email}}{{else}}<span class="hint">none</span>{{end}}</td>
+<td>{{if .ChatID}}<span class="mono">{{.ChatID}}</span>{{else}}<span class="hint">—</span>{{end}}</td>
+<td>{{.Rooms}}</td>
+<td><button type="button" class="linklike" data-edit-location data-id="{{.ID}}" data-name="{{.Name}}" data-email="{{.Email}}" data-chat="{{.ChatID}}">Edit</button>
+{{if .Email}}<form method="POST" action="/admin/locations/test-dm" style="display:inline">
+<input type="hidden" name="id" value="{{.ID}}">
+<button type="submit" class="linklike" data-confirm="Send a test Lark DM to {{.Email}}?">Send test DM</button></form>{{end}}
+{{if not .Default}}<form method="POST" action="/admin/locations/default" style="display:inline">
+<input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="linklike">Make default</button></form>
+<form method="POST" action="/admin/locations/delete" style="display:inline">
+<input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="danger" data-confirm="Remove location {{.Name}}?">Remove</button></form>{{end}}</td>
+</tr>
+{{end}}
+</table>
+{{end}}
+<details id="location-form"><summary>Add or edit a location</summary>
+<form method="POST" action="/admin/locations/save">
+<label for="l-id">ID (e.g. the Workspace building ID; can't be changed later)</label><input id="l-id" name="id" required>
+<label for="l-name">Name</label><input id="l-name" name="name" required>
+<label for="l-email">Person's Lark email</label><input id="l-email" name="lark_user_email" type="email">
+<label for="l-chat">Office group chat ID (optional, oc_…)</label><input id="l-chat" name="lark_chat_id" placeholder="oc_…">
+<button type="submit">Save location</button>
+</form></details>
+</section>
+
 <section class="section {{if eq .SavedSection "notifications"}}flash{{end}}" id="notifications">
 <h2>Notifications</h2>
 <p>Low battery, display offline, and display back online alerts go to the channels ticked here —
@@ -1091,6 +1137,8 @@ document.querySelectorAll('[data-edit-room]').forEach(function (b) {
     document.getElementById('r-name').value = d.name;
     document.getElementById('r-room').value = d.room;
     document.getElementById('r-label').value = d.label;
+    var loc = document.getElementById('r-location');
+    if (loc) loc.value = d.location || '';
     var box = document.getElementById('room-form');
     box.open = true;
     box.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1102,6 +1150,22 @@ document.querySelectorAll('[data-edit-room]').forEach(function (b) {
 var summary = document.querySelector('#room-form > summary');
 if (summary) summary.addEventListener('click', function () {
   if (!document.getElementById('room-form').open) document.getElementById('r-original').value = '';
+});
+// Confirm before actions that message a real person or remove config.
+document.querySelectorAll('[data-confirm]').forEach(function (b) {
+  b.addEventListener('click', function (e) { if (!confirm(b.dataset.confirm)) e.preventDefault(); });
+});
+document.querySelectorAll('[data-edit-location]').forEach(function (b) {
+  b.addEventListener('click', function () {
+    var d = b.dataset;
+    document.getElementById('l-id').value = d.id;
+    document.getElementById('l-id').readOnly = true;
+    document.getElementById('l-name').value = d.name;
+    document.getElementById('l-email').value = d.email;
+    document.getElementById('l-chat').value = d.chat;
+    var box = document.getElementById('location-form'); box.open = true;
+    box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  });
 });
 </script>
 <script>

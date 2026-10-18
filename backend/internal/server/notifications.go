@@ -16,13 +16,13 @@ import (
 // subs is where Web Push reads subscriptions from (the whole fleet's, or one admin's for a test).
 // It errors when a channel can't actually work, e.g. a VAPID private key that doesn't match its
 // public key; config.Validate has already rejected a channel whose secret is unset.
-func buildChannels(cfg *config.Config, channels []string, subs notify.PushSubscriptions) (notify.Notifier, string, error) {
+func buildChannels(cfg *config.Config, channels []string, subs notify.PushSubscriptions, routes notify.LarkRoutes) (notify.Notifier, string, error) {
 	var out notify.Multi
 	vapid := ""
 	for _, ch := range channels {
 		switch ch {
 		case config.ChannelLark:
-			out = append(out, notify.NewLarkWebhook(cfg.Alerts.LarkWebhookURL))
+			out = append(out, notify.NewLarkApp(cfg.Alerts.LarkApp.AppID, cfg.Alerts.LarkApp.AppSecret, cfg.Alerts.LarkApp.BaseURL, routes))
 		case config.ChannelSlack:
 			out = append(out, notify.NewSlackWebhook(cfg.Alerts.WebhookURL))
 		case config.ChannelLog:
@@ -47,10 +47,11 @@ func buildChannels(cfg *config.Config, channels []string, subs notify.PushSubscr
 // ActivateChannels makes cfg's selected channels the live alert destinations — at startup (main
 // exits if it errors: fail closed) and after an /admin channel change.
 func (s *Server) ActivateChannels(cfg *config.Config) error {
-	n, vapid, err := buildChannels(cfg, cfg.Alerts.EffectiveChannels(), s)
+	n, vapid, err := buildChannels(cfg, cfg.Alerts.EffectiveChannels(), s, s)
 	if err != nil {
 		return err
 	}
+	s.alerts.SetLocator(s.deviceLocation)
 	s.derivedMu.Lock()
 	s.vapidPublicKey = vapid
 	s.derivedMu.Unlock()
@@ -65,14 +66,34 @@ func (s *Server) vapidKey() string {
 	return s.vapidPublicKey
 }
 
-// PushSubscriptions implements notify.PushSubscriptions from the live config.
-func (s *Server) PushSubscriptions() []notify.PushSubscription {
-	subs := s.cfg.Load().PushSubscriptions
-	out := make([]notify.PushSubscription, len(subs))
-	for i, sub := range subs {
-		out[i] = notify.PushSubscription{Endpoint: sub.Endpoint, P256DH: sub.P256DH, Auth: sub.Auth}
+// PushSubscriptions implements notify.PushSubscriptions from the live config: the subscriptions
+// for location plus those that chose every location ("").
+func (s *Server) PushSubscriptions(location string) []notify.PushSubscription {
+	var out []notify.PushSubscription
+	for _, sub := range s.cfg.Load().PushSubscriptions {
+		if location == "" || sub.Location == "" || sub.Location == location {
+			out = append(out, notify.PushSubscription{Endpoint: sub.Endpoint, P256DH: sub.P256DH, Auth: sub.Auth})
+		}
 	}
 	return out
+}
+
+// LarkRoute implements notify.LarkRoutes from the live config.
+func (s *Server) LarkRoute(location string) (email, chatID string) {
+	if l, ok := s.cfg.Load().LocationByID(location); ok {
+		return l.LarkUserEmail, l.LarkChatID
+	}
+	return "", ""
+}
+
+// LarkFallbackChat implements notify.LarkRoutes.
+func (s *Server) LarkFallbackChat() string { return s.cfg.Load().Alerts.LarkFallbackChatID }
+
+// deviceLocation is the location a device's alerts route to (its room's, else the default).
+func (s *Server) deviceLocation(deviceID string) string {
+	cfg := s.cfg.Load()
+	room, _ := cfg.RoomByDeviceID(deviceID)
+	return cfg.LocationOf(room)
 }
 
 // RemovePushSubscription implements notify.PushSubscriptions: the push service said the
