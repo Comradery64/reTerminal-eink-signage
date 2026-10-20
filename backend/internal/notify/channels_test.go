@@ -253,3 +253,61 @@ func TestEncryptMatchesRFC8291AppendixA(t *testing.T) {
 		t.Errorf("RFC 8291 A body mismatch:\n got %s\nwant %s", got, want)
 	}
 }
+
+// Every failure carries the push service's status and a redacted reason; nothing delivered is
+// an error (the old code returned nil when every subscription 404/410'd, so callers said "sent").
+func TestWebPushReportsStatusAndFailsWhenNothingDelivered(t *testing.T) {
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"reason":"the key in the authorization header does not correspond to the sender ID used to subscribe ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop0123456789"}`))
+	}))
+	defer ts.Close()
+	b := newFakeBrowser(t)
+	wp := NewWebPush(testVAPID(t), "mailto:ops@example.com", &memSubs{subs: []PushSubscription{b.sub(ts.URL + "/secret-endpoint-path")}})
+	wp.Client = ts.Client()
+	err := wp.Send(context.Background(), Message{Title: "x"})
+	if err == nil {
+		t.Fatal("nothing was delivered; Send must fail")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "HTTP 403") || !strings.Contains(msg, "does not correspond") {
+		t.Errorf("status/reason missing: %s", msg)
+	}
+	for _, leak := range []string{"secret-endpoint-path", "ABCDEFGHIJKLMNOPQRSTUVWXYZ"} {
+		if strings.Contains(msg, leak) {
+			t.Errorf("error leaks %q: %s", leak, msg)
+		}
+	}
+	if (&memSubs{}).PushSubscriptions("") == nil && wp.SendReport(context.Background(), Message{}).Total != 1 {
+		t.Error("report total wrong")
+	}
+	empty := NewWebPush(testVAPID(t), "mailto:ops@example.com", &memSubs{})
+	if r := empty.SendReport(context.Background(), Message{}); r.Total != 0 || empty.Send(context.Background(), Message{}) != nil {
+		t.Error("no subscriptions is not a failure for alerts")
+	}
+}
+
+// A 404/410 on a subscription created moments ago is a sender-side smell: keep it and say so.
+// Older ones are deleted as before.
+func TestWebPushKeepsJustCreatedSubscriptionOnGone(t *testing.T) {
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusGone)
+		_, _ = w.Write([]byte("push subscription has unsubscribed or expired."))
+	}))
+	defer ts.Close()
+	now := time.Date(2026, 10, 20, 2, 9, 44, 0, time.UTC)
+	b := newFakeBrowser(t)
+	fresh, old := b.sub(ts.URL+"/fresh"), b.sub(ts.URL+"/old")
+	fresh.Created, old.Created = now.Add(-3*time.Second), now.Add(-48*time.Hour)
+	subs := &memSubs{subs: []PushSubscription{fresh, old}}
+	var logBuf strings.Builder
+	wp := NewWebPush(testVAPID(t), "mailto:ops@example.com", subs)
+	wp.Client, wp.now, wp.Log = ts.Client(), func() time.Time { return now }, slog.New(slog.NewTextHandler(&logBuf, nil))
+	r := wp.SendReport(context.Background(), Message{Title: "x"})
+	if r.Kept != 1 || r.Removed != 1 || len(subs.removed) != 1 || !strings.HasSuffix(subs.removed[0], "/old") {
+		t.Fatalf("report=%+v removed=%v: want the fresh one kept and only the old one deleted", r, subs.removed)
+	}
+	if !strings.Contains(logBuf.String(), "level=ERROR") || !strings.Contains(logBuf.String(), "status=410") {
+		t.Errorf("keeping a just-created subscription must be logged loudly with the status:\n%s", logBuf.String())
+	}
+}

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/config"
@@ -16,7 +17,7 @@ import (
 // subs is where Web Push reads subscriptions from (the whole fleet's, or one admin's for a test).
 // It errors when a channel can't actually work, e.g. a VAPID private key that doesn't match its
 // public key; config.Validate has already rejected a channel whose secret is unset.
-func buildChannels(cfg *config.Config, channels []string, subs notify.PushSubscriptions, routes notify.LarkRoutes) (notify.Notifier, string, error) {
+func buildChannels(cfg *config.Config, channels []string, subs notify.PushSubscriptions, routes notify.LarkRoutes, log *slog.Logger) (notify.Notifier, string, error) {
 	var out notify.Multi
 	vapid := ""
 	for _, ch := range channels {
@@ -33,7 +34,9 @@ func buildChannels(cfg *config.Config, channels []string, subs notify.PushSubscr
 				return nil, "", fmt.Errorf("alerts.webpush: %w", err)
 			}
 			vapid = keys.PublicKey()
-			out = append(out, notify.NewWebPush(keys, cfg.Alerts.WebPush.Subject, subs))
+			wp := notify.NewWebPush(keys, cfg.Alerts.WebPush.Subject, subs)
+			wp.Log = log
+			out = append(out, wp)
 		default:
 			return nil, "", fmt.Errorf("alerts.channels: unknown channel %q", ch)
 		}
@@ -47,7 +50,7 @@ func buildChannels(cfg *config.Config, channels []string, subs notify.PushSubscr
 // ActivateChannels makes cfg's selected channels the live alert destinations — at startup (main
 // exits if it errors: fail closed) and after an /admin channel change.
 func (s *Server) ActivateChannels(cfg *config.Config) error {
-	n, vapid, err := buildChannels(cfg, cfg.Alerts.EffectiveChannels(), s, s)
+	n, vapid, err := buildChannels(cfg, cfg.Alerts.EffectiveChannels(), s, s, s.log)
 	if err != nil {
 		return err
 	}
@@ -72,7 +75,7 @@ func (s *Server) PushSubscriptions(location string) []notify.PushSubscription {
 	var out []notify.PushSubscription
 	for _, sub := range s.cfg.Load().PushSubscriptions {
 		if location == "" || sub.Location == "" || sub.Location == location {
-			out = append(out, notify.PushSubscription{Endpoint: sub.Endpoint, P256DH: sub.P256DH, Auth: sub.Auth})
+			out = append(out, notify.PushSubscription{Endpoint: sub.Endpoint, P256DH: sub.P256DH, Auth: sub.Auth, Created: sub.Created})
 		}
 	}
 	return out
