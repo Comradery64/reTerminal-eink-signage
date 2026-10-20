@@ -155,15 +155,22 @@ rooms:
     room: "birch@example.com"
     token_sha256: "REPLACE_WITH_SHA256_OF_DEVICE_TOKEN"
 
-# Offices. Each room's alerts go to its location's person (Lark DM) and to browser-push subscribers
-# who chose that location; rooms without `location:` use default_location. Optional — without
-# locations, Lark alerts go to alerts.lark_fallback_chat_id.
+# Offices. Each room's alerts go where its location's `delivery` says, and to browser-push
+# subscribers who chose that location; rooms without `location:` use default_location. Optional —
+# without locations, Lark alerts go to alerts.lark_fallback_chat_id.
+#   delivery: group — the location's group only (needs lark_chat_id)
+#             dm    — the person only, as a direct message (needs lark_user_email)
+#             both  — the group and the person (needs both)
+#             unset — the person, and the location's group only if that DM fails
+# In every mode alerts reach alerts.lark_fallback_chat_id only if everything chosen failed.
 # locations:
 #   - id: "building-a"            # stable ID, e.g. the Workspace building ID
 #     name: "Main office"
-#     lark_user_email: "facilities-a@example.com"
-#     lark_chat_id: "oc_xxxxxxxx" # optional: this office's group, preferred over the global fallback
+#     lark_chat_id: "oc_xxxxxxxx" # this office's group
+#     delivery: group
 #   - id: "building-b"
 #     name: "Second office"
 #     lark_user_email: "facilities-b@example.com"
+#     lark_chat_id: "oc_yyyyyyyy"
+#     delivery: both
 # default_location: "building-a"

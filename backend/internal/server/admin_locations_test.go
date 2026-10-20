@@ -191,3 +191,95 @@ func TestAdminTestDMOnlyMessagesConfiguredPerson(t *testing.T) {
 		t.Error("app secret rendered")
 	}
 }
+
+// withSFGroup gives SF its own group and the given delivery mode (HQ keeps the original behaviour).
+func withSFGroup(t *testing.T, s *Server, mode string) {
+	t.Helper()
+	c := *s.cfg.Load()
+	c.Locations = append([]config.Location(nil), c.Locations...)
+	c.Locations[1].LarkChatID = "oc_sf_group"
+	c.Locations[1].Delivery = mode
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.Store(&c)
+}
+
+// End to end: a room in a "group" location alerts its group and never DMs the person; an
+// unset location (HQ) still DMs as before.
+func TestAlertHonoursLocationDelivery(t *testing.T) {
+	f := newFakeLarkServer(t)
+	s := testServerWithAuth(t)
+	withLocations(t, s, f.ts.URL+"/open-apis")
+	withSFGroup(t, s, "group")
+	c := *s.cfg.Load()
+	c.Rooms = append([]config.Room(nil), c.Rooms...)
+	c.Rooms[0].Location = "loc-sf"
+	s.cfg.Store(&c)
+	if err := s.ActivateChannels(s.cfg.Load()); err != nil {
+		t.Fatal(err)
+	}
+	s.alerts.EvaluateBattery("rt-1", "Aspen", 40, 3600, time.Now())
+	waitFor(t, func() bool { return len(f.got()) >= 1 })
+	time.Sleep(50 * time.Millisecond)
+	if got := f.got(); len(got) != 1 || got[0] != "chat_id:oc_sf_group" {
+		t.Fatalf("sent = %v, want only the SF group (no DM)", got)
+	}
+}
+
+// Delivery is saved from the form, shown, and validated: a mode that needs a field the location
+// lacks is refused rather than saved to a config that would drop alerts.
+func TestAdminLocationDeliverySaveAndValidation(t *testing.T) {
+	s := testServerWithAuth(t)
+	h := s.Handler()
+	ok := url.Values{"id": {"loc-hq"}, "name": {"HQ"}, "lark_user_email": {"hq-person@example.com"}, "lark_chat_id": {"oc_hq_group"}, "delivery": {"group"}}
+	if rec := adminPost(t, h, s, "/admin/locations/save", ok); strings.Contains(rec.Header().Get("Location"), "error") {
+		t.Fatalf("save failed: %s", rec.Header().Get("Location"))
+	}
+	if l, _ := s.cfg.Load().LocationByID("loc-hq"); l.Delivery != "group" {
+		t.Fatalf("delivery not saved: %q", l.Delivery)
+	}
+	body := adminGet(t, h, s, "/admin")
+	for _, want := range []string{`name="delivery"`, `data-delivery="group"`, `action="/admin/locations/test-group"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/admin missing %s", want)
+		}
+	}
+	for name, v := range map[string]url.Values{
+		"unknown mode":      {"id": {"loc-hq"}, "name": {"HQ"}, "lark_chat_id": {"oc_hq_group"}, "delivery": {"everyone"}},
+		"group, no group":   {"id": {"loc-hq"}, "name": {"HQ"}, "lark_user_email": {"hq-person@example.com"}, "delivery": {"group"}},
+		"dm, no person":     {"id": {"loc-hq"}, "name": {"HQ"}, "lark_chat_id": {"oc_hq_group"}, "delivery": {"dm"}},
+		"both, only person": {"id": {"loc-hq"}, "name": {"HQ"}, "lark_user_email": {"hq-person@example.com"}, "delivery": {"both"}},
+	} {
+		if rec := adminPost(t, h, s, "/admin/locations/save", v); !strings.Contains(rec.Header().Get("Location"), "error") {
+			t.Errorf("%s: must be refused", name)
+		}
+	}
+	if l, _ := s.cfg.Load().LocationByID("loc-hq"); l.Delivery != "group" {
+		t.Errorf("a refused save changed the stored delivery to %q", l.Delivery)
+	}
+}
+
+// The test message goes only to the location's saved group — a chat ID in the form is ignored —
+// asks for confirmation, and a location without a group sends nothing.
+func TestAdminTestGroupOnlyMessagesConfiguredGroup(t *testing.T) {
+	f := newFakeLarkServer(t)
+	s := testServerWithAuth(t)
+	withLocations(t, s, f.ts.URL+"/open-apis")
+	withSFGroup(t, s, "group")
+	h := s.Handler()
+	rec := adminPost(t, h, s, "/admin/locations/test-group", url.Values{"id": {"loc-sf"}, "chat_id": {"oc_attacker"}, "lark_chat_id": {"oc_attacker"}})
+	if loc := rec.Header().Get("Location"); !strings.Contains(loc, "group=") {
+		t.Fatalf("want success, got %s", loc)
+	}
+	if got := f.got(); len(got) != 1 || got[0] != "chat_id:oc_sf_group" {
+		t.Fatalf("test message went to %v, want only the SF group", got)
+	}
+	if body := adminGet(t, h, s, "/admin"); !strings.Contains(body, "Everyone in it will see it") {
+		t.Error("Send test to group must warn that the group will see it")
+	}
+	rec = adminPost(t, h, s, "/admin/locations/test-group", url.Values{"id": {"loc-hq"}})
+	if !strings.Contains(rec.Header().Get("Location"), "error") || len(f.got()) != 1 {
+		t.Errorf("a location with no group must error and send nothing: %s, sent %v", rec.Header().Get("Location"), f.got())
+	}
+}

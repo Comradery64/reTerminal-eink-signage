@@ -18,14 +18,17 @@ import (
 type LarkRoutes interface {
 	// LarkRoute returns the location's person (email) and its own group (chat ID), either "".
 	LarkRoute(location string) (email, chatID string)
+	// LarkDelivery is the location's delivery mode: "dm", "group", "both", or "" for the original
+	// behaviour (DM the person; the group only if that fails).
+	LarkDelivery(location string) string
 	// LarkFallbackChat is the global group used when a location's person can't be reached.
 	LarkFallbackChat() string
 }
 
 // LarkApp sends alerts as a Lark custom app (Open Platform), because custom-bot webhooks aren't
-// available on every tenant. Each alert goes to its location's person as a DM; only if there is no
-// person, or the DM fails, does it go to the location's group or else the global fallback group —
-// never both. Lark answers HTTP 200 for most failures with the verdict in the body's `code`, so
+// available on every tenant. Where an alert goes is the location's delivery mode: "dm" (the person),
+// "group" (the location's group) or "both"; unset means the person, then the group only if that
+// fails. The global fallback group is used only when everything the mode chose has failed. Lark answers HTTP 200 for most failures with the verdict in the body's `code`, so
 // every response is checked. The app secret and the tenant token never appear in errors or logs.
 type LarkApp struct {
 	AppID     string
@@ -56,35 +59,57 @@ var larkTokenInvalid = map[int]bool{99991661: true, 99991663: true, 99991668: tr
 
 func (l *LarkApp) Send(ctx context.Context, m Message) error {
 	text := m.Title + "\n" + m.Text
-	email, chat := "", ""
+	var email, chat, mode, fallback string
 	if l.Routes != nil {
 		email, chat = l.Routes.LarkRoute(m.Location)
+		mode, fallback = l.Routes.LarkDelivery(m.Location), l.Routes.LarkFallbackChat()
 	}
-	var dmErr error
-	if email != "" {
-		if dmErr = l.send(ctx, "email", email, text); dmErr == nil {
+	var errs []error
+	tried := map[string]bool{}
+	try := func(idType, id string) bool {
+		if id == "" || tried[idType+id] {
+			return false // nothing to send to, or already attempted this exact target
+		}
+		tried[idType+id] = true
+		err := l.send(ctx, idType, id, text)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", idType, err))
+		}
+		return err == nil
+	}
+	switch mode {
+	case "group":
+		if try("chat_id", chat) {
+			return nil
+		}
+	case "both":
+		dm, grp := try("email", email), try("chat_id", chat)
+		if dm || grp {
+			return nil // one delivered; the other's failure is the caller's to log if it wants
+		}
+	default: // "dm" and unset: the person, then the location's group
+		if try("email", email) || try("chat_id", chat) {
 			return nil
 		}
 	}
-	target := chat
-	if target == "" && l.Routes != nil {
-		target = l.Routes.LarkFallbackChat()
+	// Everything the mode chose failed (or there was nothing to try): the global fallback group.
+	if fallback != "" && try("chat_id", fallback) {
+		return nil
 	}
-	if target == "" {
-		if dmErr != nil {
-			return fmt.Errorf("DM failed and no fallback chat: %w", dmErr)
-		}
+	if len(errs) == 0 {
 		return fmt.Errorf("no Lark recipient for location %q", m.Location)
 	}
-	if err := l.send(ctx, "chat_id", target, text); err != nil {
-		return errors.Join(dmErr, fmt.Errorf("fallback chat: %w", err))
-	}
-	return nil // delivered to the fallback chat; a failed DM is the caller's to log if it wants
+	return fmt.Errorf("no Lark delivery for location %q: %w", m.Location, errors.Join(errs...))
 }
 
 // SendDM messages one person directly — the /admin "Send test DM" action.
 func (l *LarkApp) SendDM(ctx context.Context, email string, m Message) error {
 	return l.send(ctx, "email", email, m.Title+"\n"+m.Text)
+}
+
+// SendChat posts to one group — the /admin "Send test to group" action.
+func (l *LarkApp) SendChat(ctx context.Context, chatID string, m Message) error {
+	return l.send(ctx, "chat_id", chatID, m.Title+"\n"+m.Text)
 }
 
 func (l *LarkApp) send(ctx context.Context, idType, id, text string) error {

@@ -51,6 +51,30 @@ func TestValidateNotifyFailsClosed(t *testing.T) {
 			c.Locations = []Location{{ID: "a", Name: "A", LarkUserEmail: "a@example.com"}, {ID: "b", Name: "B"}}
 			c.DefaultLocation = "a"
 		},
+		"delivery not a mode": func(c *Config) {
+			c.Alerts.Channels = []string{"lark"}
+			larkOK(c)
+			c.Locations = []Location{{ID: "a", Name: "A", LarkUserEmail: "a@example.com", LarkChatID: "oc_a", Delivery: "dms"}}
+			c.DefaultLocation = "a"
+		},
+		"delivery dm without a person": func(c *Config) {
+			c.Alerts.Channels = []string{"lark"}
+			larkOK(c)
+			c.Locations = []Location{{ID: "a", Name: "A", LarkChatID: "oc_a", Delivery: "dm"}}
+			c.DefaultLocation = "a"
+		},
+		"delivery group without a group": func(c *Config) {
+			c.Alerts.Channels = []string{"lark"}
+			larkOK(c)
+			c.Locations = []Location{{ID: "a", Name: "A", LarkUserEmail: "a@example.com", Delivery: "group"}}
+			c.DefaultLocation = "a"
+		},
+		"delivery both with only a group": func(c *Config) {
+			c.Alerts.Channels = []string{"lark"}
+			larkOK(c)
+			c.Locations = []Location{{ID: "a", Name: "A", LarkChatID: "oc_a", Delivery: "both"}}
+			c.DefaultLocation = "a"
+		},
 		"lark fallback not a chat id": func(c *Config) {
 			c.Alerts.Channels = []string{"lark"}
 			larkOK(c)
@@ -82,6 +106,18 @@ func TestValidateNotifyFailsClosed(t *testing.T) {
 	ok.Alerts.WebPush = WebPushConfig{VAPIDPublicKey: pub, VAPIDPrivateKey: priv, Subject: "mailto:ops@example.com"}
 	if err := ok.Validate(); err != nil {
 		t.Errorf("valid lark+webpush config rejected: %v", err)
+	}
+
+	// Every delivery mode is accepted when its fields are present, and an unset one still is.
+	for _, mode := range []string{"", DeliveryDM, DeliveryGroup, DeliveryBoth} {
+		c := notifyBase()
+		c.Alerts.Channels = []string{"lark"}
+		larkOK(c)
+		c.Locations = []Location{{ID: "a", Name: "A", LarkUserEmail: "a@example.com", LarkChatID: "oc_a", Delivery: mode}}
+		c.DefaultLocation = "a"
+		if err := c.Validate(); err != nil {
+			t.Errorf("delivery %q rejected: %v", mode, err)
+		}
 	}
 }
 

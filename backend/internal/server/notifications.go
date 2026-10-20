@@ -89,6 +89,12 @@ func (s *Server) LarkRoute(location string) (email, chatID string) {
 	return "", ""
 }
 
+// LarkDelivery implements notify.LarkRoutes.
+func (s *Server) LarkDelivery(location string) string {
+	l, _ := s.cfg.Load().LocationByID(location)
+	return l.Delivery
+}
+
 // LarkFallbackChat implements notify.LarkRoutes.
 func (s *Server) LarkFallbackChat() string { return s.cfg.Load().Alerts.LarkFallbackChatID }
 
