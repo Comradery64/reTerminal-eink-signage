@@ -73,7 +73,13 @@ func (s *Server) vapidKey() string {
 // for location plus those that chose every location ("").
 func (s *Server) PushSubscriptions(location string) []notify.PushSubscription {
 	var out []notify.PushSubscription
-	for _, sub := range s.cfg.Load().PushSubscriptions {
+	cfg := s.cfg.Load()
+	for _, sub := range cfg.PushSubscriptions {
+		// A subscription made before its owner was limited must not keep delivering other offices'
+		// alerts: the account's current locations apply at send time, not just at subscribe time.
+		if u, ok := cfg.UserByUsername(sub.Username); ok && u.Limited() && !u.CanSeeLocation(location) {
+			continue
+		}
 		if location == "" || sub.Location == "" || sub.Location == location {
 			out = append(out, notify.PushSubscription{Endpoint: sub.Endpoint, P256DH: sub.P256DH, Auth: sub.Auth, Created: sub.Created})
 		}

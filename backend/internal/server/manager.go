@@ -31,8 +31,12 @@ func (s *Server) handleManagerPage(w http.ResponseWriter, r *http.Request) {
 	cfg := s.cfg.Load()
 	devices := status.Build(cfg, s.tlm, time.Now())
 
+	visible := s.roomVisible(managerUI, r)
 	rows := make([]managerRow, 0, len(devices))
 	for _, d := range devices {
+		if !visible(d.DeviceID) {
+			continue
+		}
 		room, _ := cfg.RoomByDeviceID(d.DeviceID)
 		mode := cfg.Wake.Mode
 		if mode == "" {
@@ -78,6 +82,10 @@ func (s *Server) handleManagerSaveWake(w http.ResponseWriter, r *http.Request) {
 	}
 	deviceID := r.PostForm.Get("device_id")
 	mode := r.PostForm.Get("wake_mode")
+	if !s.roomVisible(managerUI, r)(deviceID) {
+		http.Error(w, "that room isn't in a location you can manage", http.StatusForbidden)
+		return
+	}
 
 	var flatSeconds *uint32
 	if mode == "flat" {

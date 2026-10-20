@@ -12,7 +12,9 @@ the next *person* who isn't comfortable in a shell, has a real path forward.
   tokens both pushed via the web form, both persisted to the ConfigMap, both
   confirmed checking in). See "Multiple displays per one room" below.
 - **Fleet wake defaults, alerts, access grants (RBAC for admin/manager/viewer + 2FA)** — all
-  `/admin` sections, all backed by the same config-persistence path.
+  `/admin` sections, all backed by the same config-persistence path. A manager or viewer can be
+  limited to some locations (`/admin` → Access → "Locations this person can see"); with none
+  ticked they see every location, and admins always do.
 - **OTA firmware rollout** — `/admin` → Firmware sets a target version + image URL for devices
   *already deployed and networked*. This is the only firmware-related GUI surface that exists;
   see the gap below for why it doesn't cover first-time flashing.

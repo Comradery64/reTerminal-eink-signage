@@ -357,11 +357,24 @@ func (s *Server) handleAdminSaveUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	user := config.User{
-		Username:           username,
-		PasswordSHA256:     passwordHash,
-		Role:               r.PostForm.Get("role"),
-		MustChangePassword: mustChangePassword,
+	// Start from the stored account so what the holder set themselves (2FA secret, recovery email)
+	// survives an admin edit; the form only owns username, role, password and locations.
+	user := config.User{}
+	if originalUsername != "" {
+		user, _ = cfg.UserByUsername(originalUsername)
+	} else if existing, ok := cfg.UserByUsername(username); ok {
+		user = existing
+	}
+	user.Username = username
+	user.PasswordSHA256 = passwordHash
+	user.Role = r.PostForm.Get("role")
+	user.MustChangePassword = mustChangePassword
+	// Locations the account is limited to; none ticked means every location.
+	user.Locations = nil
+	for _, id := range r.PostForm["locations"] {
+		if id = strings.TrimSpace(id); id != "" {
+			user.Locations = append(user.Locations, id)
+		}
 	}
 
 	newCfg, err := cfg.WithUser(user)
@@ -872,13 +885,14 @@ this account has been signed out: <span class="mono">{{.ResetPassword}}</span><b
 They'll be asked to set their own password on next login.
 </div>{{end}}
 <table>
-<tr><th>Username</th><th>Role</th><th></th></tr>
+<tr><th>Username</th><th>Role</th><th>Locations</th><th></th></tr>
 {{$me := .Username}}
 {{range .View.Users}}
 <tr>
 <td class="mono">{{.Username}}</td><td>{{.Role}}</td>
+<td>{{if eq .Role "admin"}}<span class="hint">all (admin)</span>{{else if .Locations}}{{range $i, $l := .Locations}}{{if $i}}, {{end}}<span class="mono">{{$l}}</span>{{end}}{{else}}<span class="hint">all</span>{{end}}</td>
 <td><button type="button" class="linklike" data-edit-user
-  data-username="{{.Username}}" data-role="{{.Role}}">Edit</button>
+  data-username="{{.Username}}" data-role="{{.Role}}" data-locations="{{range .Locations}}{{.}},{{end}}">Edit</button>
 <form method="POST" action="/admin/access/reset-password" style="display:inline">
 <input type="hidden" name="username" value="{{.Username}}">
 <button type="submit" class="linklike" onclick="return confirm('Reset {{.Username}}\'s password? They will be signed out everywhere and must set a new password.')">Reset password</button>
@@ -901,6 +915,9 @@ They'll be asked to set their own password on next login.
 <option value="manager" selected>Manager — status + wake-mode control</option>
 <option value="viewer">Viewer — status only, read-only</option>
 </select>
+{{if .Locations.Rows}}<fieldset id="u-locations"><legend>Locations this person can see (none ticked = all; admins always see all)</legend>
+{{range .Locations.Rows}}<label class="checkbox-label"><input type="checkbox" name="locations" value="{{.ID}}"> {{.Name}} <span class="mono hint">{{.ID}}</span></label>
+{{end}}</fieldset>{{end}}
 <label for="u-password">Password (leave blank to keep existing)</label><input id="u-password" type="text" name="password">
 <label for="u-force-change" class="checkbox-label"><input id="u-force-change" type="checkbox" name="force_password_change" checked> Force user to change password on first login</label>
 <button type="submit">Save access</button>
@@ -1190,6 +1207,8 @@ document.querySelectorAll('[data-edit-user]').forEach(function (b) {
     document.getElementById('u-original').value = d.username;
     document.getElementById('u-username').value = d.username;
     document.getElementById('u-role').value = d.role;
+    var ticked = (d.locations || '').split(',');
+    document.querySelectorAll('#u-locations input[name=locations]').forEach(function (c) { c.checked = ticked.indexOf(c.value) !== -1; });
     var box = document.getElementById('access-form');
     box.open = true;
     box.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1200,7 +1219,10 @@ document.querySelectorAll('[data-edit-user]').forEach(function (b) {
 // an add silently rename-and-delete an unrelated account.
 var accessSummary = document.querySelector('#access-form > summary');
 if (accessSummary) accessSummary.addEventListener('click', function () {
-  if (!document.getElementById('access-form').open) document.getElementById('u-original').value = '';
+  if (!document.getElementById('access-form').open) {
+    document.getElementById('u-original').value = '';
+    document.querySelectorAll('#u-locations input[name=locations]').forEach(function (c) { c.checked = false; });
+  }
 });
 </script>
 <script>
@@ -1225,7 +1247,8 @@ if (accessSummary) accessSummary.addEventListener('click', function () {
       var data = {};
       Array.prototype.forEach.call(form.elements, function (el) {
         if (!el.name || SKIP_NAMES.indexOf(el.name) !== -1) return;
-        data[el.name] = el.type === 'checkbox' ? el.checked : el.value;
+        // Checkboxes sharing a name (the Access locations group) are told apart by their value.
+        data[el.type === 'checkbox' ? el.name + '=' + el.value : el.name] = el.type === 'checkbox' ? el.checked : el.value;
       });
       try { sessionStorage.setItem(key, JSON.stringify(data)); } catch (e) {}
     });
@@ -1244,8 +1267,9 @@ if (accessSummary) accessSummary.addEventListener('click', function () {
     var data;
     try { data = JSON.parse(raw); } catch (e) { return; }
     Array.prototype.forEach.call(form.elements, function (el) {
-      if (!el.name || !(el.name in data)) return;
-      if (el.type === 'checkbox') { el.checked = data[el.name]; } else { el.value = data[el.name]; }
+      var k = el.type === 'checkbox' ? el.name + '=' + el.value : el.name;
+      if (!el.name || !(k in data)) return;
+      if (el.type === 'checkbox') { el.checked = data[k]; } else { el.value = data[k]; }
     });
     var details = form.closest('details');
     if (details) details.open = true;

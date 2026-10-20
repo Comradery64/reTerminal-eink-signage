@@ -26,8 +26,9 @@ type RoomView struct {
 // UserView is one login account as shown on the admin Access panel. Never exposes the password
 // hash — only whether one is set, mirroring RoomView.TokenConfigured.
 type UserView struct {
-	Username string
-	Role     string
+	Username  string
+	Role      string
+	Locations []string // locations the account is limited to; empty = every location
 }
 
 // FleetView is the provisioning wizard's fleet Wi-Fi state. WifiPSKConfigured never exposes the
@@ -78,7 +79,7 @@ func Build(cfg *config.Config) View {
 
 	users := make([]UserView, 0, len(cfg.Users))
 	for _, u := range cfg.Users {
-		users = append(users, UserView{Username: u.Username, Role: u.Role})
+		users = append(users, UserView{Username: u.Username, Role: u.Role, Locations: u.Locations})
 	}
 
 	return View{
