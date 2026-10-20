@@ -197,8 +197,8 @@ func (c *Config) PushSubscriptionsFor(username string) []PushSubscription {
 // ── Locations ────────────────────────────────────────────────────────────────
 
 // Location is an office/building. Each room belongs to one (Room.Location, else
-// Config.DefaultLocation), and its alerts go to that location's person as a Lark DM and to
-// browser-push subscribers who chose that location.
+// Config.DefaultLocation), and its alerts go where Delivery says (that location's group, its person
+// as a Lark DM, or both) and to browser-push subscribers who chose that location.
 type Location struct {
 	ID            string `yaml:"id"`                        // stable key, e.g. the Workspace building ID
 	Name          string `yaml:"name"`                      // shown in /admin and in alert text
@@ -206,7 +206,17 @@ type Location struct {
 	// LarkChatID (oc_…) is this location's own group, used instead of the global
 	// alerts.lark_fallback_chat_id when the person can't be reached. Optional.
 	LarkChatID string `yaml:"lark_chat_id,omitempty"`
+	// Delivery picks where this location's Lark alerts go: "dm", "group" or "both". Empty keeps
+	// the original behaviour (DM the person, falling back to the group only if that fails).
+	Delivery string `yaml:"delivery,omitempty"`
 }
+
+// Lark delivery modes for Location.Delivery.
+const (
+	DeliveryDM    = "dm"    // the person only; the groups are used only if the DM fails
+	DeliveryGroup = "group" // the location's group only; the global fallback only if that fails
+	DeliveryBoth  = "both"  // the person and the group; the global fallback only if both fail
+)
 
 // LarkAppConfig is the Lark custom app the broker sends as. AppID is not secret; AppSecret is
 // ("${LARK_APP_SECRET}"). BaseURL defaults to the Larksuite (global) Open API.
@@ -253,6 +263,12 @@ func (c *Config) validateLocations() error {
 			return fmt.Errorf("location %q: lark_user_email %q is not an email address", l.ID, l.LarkUserEmail)
 		case l.LarkChatID != "" && !strings.HasPrefix(l.LarkChatID, "oc_"):
 			return fmt.Errorf("location %q: lark_chat_id must be a Lark chat ID (oc_…)", l.ID)
+		case l.Delivery != "" && l.Delivery != DeliveryDM && l.Delivery != DeliveryGroup && l.Delivery != DeliveryBoth:
+			return fmt.Errorf("location %q: delivery %q must be dm, group or both", l.ID, l.Delivery)
+		case (l.Delivery == DeliveryDM || l.Delivery == DeliveryBoth) && l.LarkUserEmail == "":
+			return fmt.Errorf("location %q: delivery %q needs lark_user_email", l.ID, l.Delivery)
+		case (l.Delivery == DeliveryGroup || l.Delivery == DeliveryBoth) && l.LarkChatID == "":
+			return fmt.Errorf("location %q: delivery %q needs lark_chat_id", l.ID, l.Delivery)
 		}
 		seen[l.ID] = true
 	}

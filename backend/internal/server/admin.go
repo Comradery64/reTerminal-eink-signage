@@ -43,7 +43,7 @@ func (s *Server) handleAdminPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	data.Notifications = buildNotificationsPanel(cfg, data.Username, r.URL.Query().Get("tested"))
-	data.Locations = buildLocationsPanel(cfg, r.URL.Query().Get("dm"))
+	data.Locations = buildLocationsPanel(cfg, r.URL.Query().Get("dm"), r.URL.Query().Get("group"))
 	// A reset password is viewable exactly once: take() deletes it from the store on this same
 	// read, so reloading the page (or anyone who later finds this nonce in browser history) finds
 	// nothing — see password_reset.go.
@@ -961,20 +961,25 @@ another admin's code, each account enrolls its own authenticator app.</p>
 
 <section class="section {{if eq .SavedSection "locations"}}flash{{end}}" id="locations">
 <h2>Locations</h2>
-<p>Each office has a person who gets a Lark message when one of its displays runs low or goes offline.
-If that person can't be reached, the alert goes to the office's group (if set), otherwise to the
-fallback group under Notifications — never both.</p>
+<p>Each office chooses where its Lark alerts go: its group, its person (a direct message), or both.
+If everything chosen fails, the alert goes to the fallback group under Notifications. "Default"
+messages the person and uses the group only if that fails.</p>
+{{if .Locations.TestedGroup}}<p class="ok">Test message posted to {{.Locations.TestedGroup}}'s group — ask a member to confirm it arrived.</p>{{end}}
 {{if .Locations.Tested}}<p class="ok">Test DM sent to {{.Locations.Tested}} — ask them to confirm it arrived.</p>{{end}}
 {{if .Locations.Rows}}
 <table>
-<tr><th>Location</th><th>Person</th><th>Group</th><th>Rooms</th><th></th></tr>
+<tr><th>Location</th><th>Alerts go to</th><th>Person</th><th>Group</th><th>Rooms</th><th></th></tr>
 {{range .Locations.Rows}}
 <tr>
 <td>{{.Name}} <span class="mono hint">{{.ID}}</span>{{if .Default}} <span class="hint">(default)</span>{{end}}</td>
+<td>{{if eq .Delivery "group"}}Group{{else if eq .Delivery "dm"}}Person (DM){{else if eq .Delivery "both"}}Group + person{{else}}<span class="hint">Default</span>{{end}}</td>
 <td>{{if .Email}}{{.Email}}{{else}}<span class="hint">none</span>{{end}}</td>
 <td>{{if .ChatID}}<span class="mono">{{.ChatID}}</span>{{else}}<span class="hint">—</span>{{end}}</td>
 <td>{{.Rooms}}</td>
-<td><button type="button" class="linklike" data-edit-location data-id="{{.ID}}" data-name="{{.Name}}" data-email="{{.Email}}" data-chat="{{.ChatID}}">Edit</button>
+<td><button type="button" class="linklike" data-edit-location data-id="{{.ID}}" data-name="{{.Name}}" data-email="{{.Email}}" data-chat="{{.ChatID}}" data-delivery="{{.Delivery}}">Edit</button>
+{{if .ChatID}}<form method="POST" action="/admin/locations/test-group" style="display:inline">
+<input type="hidden" name="id" value="{{.ID}}">
+<button type="submit" class="linklike" data-confirm="Post a test message to {{.Name}}'s group? Everyone in it will see it.">Send test to group</button></form>{{end}}
 {{if .Email}}<form method="POST" action="/admin/locations/test-dm" style="display:inline">
 <input type="hidden" name="id" value="{{.ID}}">
 <button type="submit" class="linklike" data-confirm="Send a test Lark DM to {{.Email}}?">Send test DM</button></form>{{end}}
@@ -992,6 +997,12 @@ fallback group under Notifications — never both.</p>
 <label for="l-name">Name</label><input id="l-name" name="name" required>
 <label for="l-email">Person's Lark email</label><input id="l-email" name="lark_user_email" type="email">
 <label for="l-chat">Office group chat ID (optional, oc_…)</label><input id="l-chat" name="lark_chat_id" placeholder="oc_…">
+<label for="l-delivery">Send alerts to</label><select id="l-delivery" name="delivery">
+<option value="group" selected>Group only (needs a group chat ID)</option>
+<option value="dm">Person only, as a direct message (needs an email)</option>
+<option value="both">Group and person (needs both)</option>
+<option value="">Default: person, group only if that fails</option>
+</select>
 <button type="submit">Save location</button>
 </form></details>
 </section>
@@ -1163,6 +1174,7 @@ document.querySelectorAll('[data-edit-location]').forEach(function (b) {
     document.getElementById('l-name').value = d.name;
     document.getElementById('l-email').value = d.email;
     document.getElementById('l-chat').value = d.chat;
+    document.getElementById('l-delivery').value = d.delivery;
     var box = document.getElementById('location-form'); box.open = true;
     box.scrollIntoView({ behavior: 'smooth', block: 'center' });
   });

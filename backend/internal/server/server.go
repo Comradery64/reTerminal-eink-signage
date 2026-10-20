@@ -207,6 +207,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/locations/delete", s.requireRole(adminUI, s.handleAdminDeleteLocation))
 	mux.HandleFunc("POST /admin/locations/default", s.requireRole(adminUI, s.handleAdminDefaultLocation))
 	mux.HandleFunc("POST /admin/locations/test-dm", s.requireRole(adminUI, s.handleAdminTestDM))
+	mux.HandleFunc("POST /admin/locations/test-group", s.requireRole(adminUI, s.handleAdminTestGroup))
 	mux.HandleFunc("POST /admin/firmware/save", s.requireRole(adminUI, s.handleAdminSaveFirmware))
 	mux.HandleFunc("POST /admin/fleet/save", s.requireRole(adminUI, s.handleAdminSaveFleetWifi))
 	mux.HandleFunc("POST /admin/access/save", s.requireRole(adminUI, s.handleAdminSaveUser))
