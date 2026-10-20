@@ -145,8 +145,8 @@ func TestGonePushSubscriptionIsDeletedFromConfig(t *testing.T) {
 	keys, _ := notify.ParseVAPIDKeys(vc.VAPIDPublicKey, vc.VAPIDPrivateKey)
 	wp := notify.NewWebPush(keys, vc.Subject, s)
 	wp.Client = ts.Client()
-	if err := wp.Send(context.Background(), notify.Message{Title: "x"}); err != nil {
-		t.Fatalf("a 410 is cleanup, not a failure: %v", err)
+	if err := wp.Send(context.Background(), notify.Message{Title: "x"}); err == nil || !strings.Contains(err.Error(), "410") {
+		t.Fatalf("a 410 means nothing was delivered: Send must say so, got %v", err)
 	}
 	if n := len(s.cfg.Load().PushSubscriptions); n != 0 {
 		t.Fatalf("410'd subscription still in config (%d left)", n)

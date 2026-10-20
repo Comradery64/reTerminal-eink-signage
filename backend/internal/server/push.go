@@ -101,7 +101,8 @@ func (s *Server) handlePushSubscribe(ui roleUI) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		s.log.Info("push subscription added", "user", user, "push_service", originOf(req.Endpoint))
+		s.log.Info("push subscription added", "user", user, "push_service", originOf(req.Endpoint),
+			"location", req.Location, "browser", browserFamily(r.UserAgent()))
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -231,3 +232,15 @@ refresh();
 {{end}}
 </body></html>
 `))
+
+// browserFamily names the browser for the subscribe log — enough to spot e.g. a browser whose
+// push service rejects subscriptions (Brave ships with Google push disabled) — without logging
+// the full user-agent string.
+func browserFamily(ua string) string {
+	for _, b := range []string{"Edg/", "Brave", "OPR/", "Arc/", "Firefox/", "Chrome/", "Safari/"} {
+		if strings.Contains(ua, b) {
+			return strings.TrimSuffix(b, "/")
+		}
+	}
+	return "other"
+}

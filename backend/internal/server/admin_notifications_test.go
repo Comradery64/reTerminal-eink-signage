@@ -206,3 +206,30 @@ func TestAdminTestPushOnlyReachesOwnBrowsers(t *testing.T) {
 		t.Errorf("test push reached %v, want only the admin's own browser", hit)
 	}
 }
+
+// The 02:09 incident: the push service 410'd the only subscription, yet the UI and log said
+// "sent". The test button must report the push service's actual answer.
+func TestAdminPushTestReportsRealFailure(t *testing.T) {
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusGone)
+		_, _ = w.Write([]byte("push subscription has unsubscribed or expired."))
+	}))
+	defer ts.Close()
+	orig := http.DefaultTransport
+	http.DefaultTransport = ts.Client().Transport
+	defer func() { http.DefaultTransport = orig }()
+
+	s := testServerWithAuth(t)
+	withSecrets(t, s, "https://open.larksuite.com/open-apis")
+	p, a := browserKeys(t)
+	c, err := s.cfg.Load().WithPushSubscription(config.PushSubscription{Username: testAdminUsername, Endpoint: ts.URL + "/x", P256DH: p, Auth: a})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.Store(c)
+	rec := adminPost(t, s.Handler(), s, "/admin/notifications/test", url.Values{"test_channel": {"webpush"}})
+	loc, _ := url.QueryUnescape(rec.Header().Get("Location"))
+	if strings.Contains(loc, "tested=") || !strings.Contains(loc, "error=") || !strings.Contains(loc, "410") {
+		t.Fatalf("a rejected push must be reported as failed with its status, got %s", loc)
+	}
+}

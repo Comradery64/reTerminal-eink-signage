@@ -87,7 +87,7 @@ func (s *Server) handleAdminSaveNotifications(w http.ResponseWriter, r *http.Req
 		adminRedirectError(w, r, "Couldn't turn that channel on: its secret isn't set on the server.||"+err.Error(), "notifications")
 		return
 	}
-	if _, _, err := buildChannels(newCfg, newCfg.Alerts.EffectiveChannels(), s, s); err != nil {
+	if _, _, err := buildChannels(newCfg, newCfg.Alerts.EffectiveChannels(), s, s, s.log); err != nil {
 		adminRedirectError(w, r, "That channel's configuration doesn't work.||"+err.Error(), "notifications")
 		return
 	}
@@ -113,7 +113,7 @@ type userPushSubs struct {
 func (u userPushSubs) PushSubscriptions(string) []notify.PushSubscription { // a test ignores location
 	var out []notify.PushSubscription
 	for _, sub := range u.s.cfg.Load().PushSubscriptionsFor(u.username) {
-		out = append(out, notify.PushSubscription{Endpoint: sub.Endpoint, P256DH: sub.P256DH, Auth: sub.Auth})
+		out = append(out, notify.PushSubscription{Endpoint: sub.Endpoint, P256DH: sub.P256DH, Auth: sub.Auth, Created: sub.Created})
 	}
 	return out
 }
@@ -157,7 +157,7 @@ func (s *Server) handleAdminTestNotification(w http.ResponseWriter, r *http.Requ
 		adminRedirectError(w, r, "Turn on browser notifications for this browser first (link in this section), then test.", "notifications")
 		return
 	}
-	n, _, err := buildChannels(cfg, []string{ch}, userPushSubs{s: s, username: user}, s)
+	n, _, err := buildChannels(cfg, []string{ch}, userPushSubs{s: s, username: user}, s, s.log)
 	if err != nil {
 		adminRedirectError(w, r, "That channel's configuration doesn't work.||"+err.Error(), "notifications")
 		return

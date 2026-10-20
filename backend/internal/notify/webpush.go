@@ -16,9 +16,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -33,6 +36,7 @@ type PushSubscription struct {
 	Endpoint string
 	P256DH   string
 	Auth     string
+	Created  time.Time // zero if unknown; used to refuse deleting a just-created subscription
 }
 
 // PushSubscriptions supplies the subscriptions that should receive an alert for a location ("" =
@@ -42,6 +46,36 @@ type PushSubscriptions interface {
 	PushSubscriptions(location string) []PushSubscription
 	RemovePushSubscription(endpoint string)
 }
+
+// PushError is one push service's refusal: its HTTP status and its reason text (redacted of
+// anything token-shaped). The endpoint path, keys and payload are never included.
+type PushError struct {
+	Origin string // scheme://host of the push service, e.g. https://fcm.googleapis.com
+	Status int
+	Reason string
+}
+
+func (e *PushError) Error() string {
+	if e.Reason == "" {
+		return fmt.Sprintf("%s answered HTTP %d", e.Origin, e.Status)
+	}
+	return fmt.Sprintf("%s answered HTTP %d: %s", e.Origin, e.Status, e.Reason)
+}
+
+// PushReport is what one Send actually achieved, so callers (the /admin test button) can say
+// "sent", "failed", or "no subscriptions" truthfully instead of assuming success.
+type PushReport struct {
+	Total     int
+	Delivered int
+	Removed   int          // gone (404/410) and deleted
+	Kept      int          // gone but NOT deleted because the subscription was just created
+	Failures  []*PushError // every non-2xx, including the 404/410s above
+}
+
+// freshSubscriptionGrace: a push service rejecting a subscription this young is almost never
+// "the user unsubscribed" — it points at a sender-side problem (keys, JWT, encoding) — so it's
+// logged loudly and kept rather than silently deleted.
+const freshSubscriptionGrace = 10 * time.Minute
 
 // VAPIDKeys is a P-256 application-server key pair in the standard web-push encoding:
 // public = base64url of the 65-byte uncompressed point, private = base64url of the 32-byte scalar.
@@ -81,6 +115,7 @@ func (k *VAPIDKeys) PublicKey() string { return base64.RawURLEncoding.EncodeToSt
 
 // WebPush sends every Message to every current subscription.
 type WebPush struct {
+	Log     *slog.Logger // optional; reports subscriptions kept despite a 404/410
 	Keys    *VAPIDKeys
 	Subject string // VAPID "sub": mailto: or https: contact for the push service operator
 	Subs    PushSubscriptions
@@ -103,37 +138,69 @@ type pushPayload struct {
 	Tag   string `json:"tag,omitempty"` // same tag replaces an earlier notification for that room
 }
 
-// Send delivers m to every subscription. A 404/410 means the browser unsubscribed or the
-// subscription expired: it is removed via Subs and does not count as a failure. Other failures
-// are joined so one dead endpoint can't hide the rest.
+// Send delivers m to every subscription for its location and errors unless it reached at least
+// one browser (or there were none to reach). A definitive 404/410 deletes the subscription —
+// unless it was created moments ago, which is logged loudly and kept (see freshSubscriptionGrace).
 func (w *WebPush) Send(ctx context.Context, m Message) error {
-	payload, _ := json.Marshal(pushPayload{Title: m.Title, Body: m.Text, Tag: m.DeviceID})
-	var errs []error
-	for _, sub := range w.Subs.PushSubscriptions(m.Location) {
-		gone, err := w.sendOne(ctx, sub, payload)
-		if gone {
-			w.Subs.RemovePushSubscription(sub.Endpoint)
-			continue
-		}
-		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", endpointOrigin(sub.Endpoint), err))
-		}
+	r := w.SendReport(ctx, m)
+	if r.Total == 0 || r.Delivered > 0 && len(r.Failures) == 0 {
+		return nil
 	}
-	return errors.Join(errs...)
+	errs := make([]error, 0, len(r.Failures))
+	for _, f := range r.Failures {
+		errs = append(errs, f)
+	}
+	if r.Delivered > 0 {
+		return fmt.Errorf("delivered to %d of %d browsers: %w", r.Delivered, r.Total, errors.Join(errs...))
+	}
+	return fmt.Errorf("not delivered to any of %d browsers: %w", r.Total, errors.Join(errs...))
 }
 
-func (w *WebPush) sendOne(ctx context.Context, sub PushSubscription, payload []byte) (gone bool, err error) {
+// SendReport is Send with the full outcome.
+func (w *WebPush) SendReport(ctx context.Context, m Message) PushReport {
+	payload, _ := json.Marshal(pushPayload{Title: m.Title, Body: m.Text, Tag: m.DeviceID})
+	subs := w.Subs.PushSubscriptions(m.Location)
+	r := PushReport{Total: len(subs)}
+	for _, sub := range subs {
+		status, reason, err := w.sendOne(ctx, sub, payload)
+		switch {
+		case err != nil:
+			r.Failures = append(r.Failures, &PushError{Origin: endpointOrigin(sub.Endpoint), Reason: err.Error()})
+		case status >= 200 && status < 300:
+			r.Delivered++
+		default:
+			pe := &PushError{Origin: endpointOrigin(sub.Endpoint), Status: status, Reason: reason}
+			r.Failures = append(r.Failures, pe)
+			if status != http.StatusNotFound && status != http.StatusGone {
+				continue
+			}
+			if !sub.Created.IsZero() && w.now().Sub(sub.Created) < freshSubscriptionGrace {
+				r.Kept++
+				if w.Log != nil {
+					w.Log.Error("push service rejected a subscription created moments ago; keeping it — this points at a sender-side problem (keys, JWT, encoding), not an expired subscription",
+						"push_service", pe.Origin, "status", status, "reason", reason, "age", w.now().Sub(sub.Created).Round(time.Second))
+				}
+				continue
+			}
+			w.Subs.RemovePushSubscription(sub.Endpoint)
+			r.Removed++
+		}
+	}
+	return r
+}
+
+func (w *WebPush) sendOne(ctx context.Context, sub PushSubscription, payload []byte) (status int, reason string, err error) {
 	body, err := encryptPush(sub, payload)
 	if err != nil {
-		return false, err
+		return 0, "", err
 	}
 	jwt, err := w.vapidJWT(sub.Endpoint)
 	if err != nil {
-		return false, err
+		return 0, "", err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, sub.Endpoint, bytes.NewReader(body))
 	if err != nil {
-		return false, redactURL(err)
+		return 0, "", redactURL(err)
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set("Content-Encoding", "aes128gcm")
@@ -142,16 +209,44 @@ func (w *WebPush) sendOne(ctx context.Context, sub PushSubscription, payload []b
 	req.Header.Set("Authorization", "vapid t="+jwt+", k="+w.Keys.PublicKey())
 	resp, err := w.Client.Do(req)
 	if err != nil {
-		return false, redactURL(err)
+		return 0, "", redactURL(err)
 	}
 	defer resp.Body.Close()
-	switch {
-	case resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone:
-		return true, nil
-	case resp.StatusCode >= 300:
-		return false, fmt.Errorf("push service status %d", resp.StatusCode)
+	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<10))
+		return resp.StatusCode, pushReason(raw), nil
 	}
-	return false, nil
+	return resp.StatusCode, "", nil
+}
+
+var tokenShaped = regexp.MustCompile(`[A-Za-z0-9_\-:.]{40,}`)
+
+// pushReason condenses a push service error body to one safe line: FCM/Mozilla/Apple put the
+// human reason in JSON or plain text; anything long and token-like (it can echo the
+// registration ID) is redacted, and the result is capped.
+func pushReason(raw []byte) string {
+	var j struct {
+		Reason  string `json:"reason"`
+		Message string `json:"message"`
+		Error   any    `json:"error"`
+	}
+	s := strings.TrimSpace(string(raw))
+	if json.Unmarshal(raw, &j) == nil {
+		switch {
+		case j.Reason != "":
+			s = j.Reason
+		case j.Message != "":
+			s = j.Message
+		case j.Error != nil:
+			b, _ := json.Marshal(j.Error)
+			s = string(b)
+		}
+	}
+	s = tokenShaped.ReplaceAllString(strings.Join(strings.Fields(s), " "), "<redacted>")
+	if len(s) > 200 {
+		s = s[:200] + "…"
+	}
+	return s
 }
 
 // vapidJWT signs the RFC 8292 claims: aud = the push service origin, exp <= 24h, sub = contact.
