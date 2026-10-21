@@ -24,12 +24,14 @@ type roleUI struct {
 	homePath           string
 	changePasswordPath string
 	totpVerifyPath     string
+	totpSetupPath      string
+	totpEnablePath     string
 }
 
 var (
-	adminUI   = roleUI{role: auth.RoleAdmin, label: "Admin", cookieName: "admin_session", loginPath: "/admin/login", homePath: "/admin", changePasswordPath: "/admin/change-password", totpVerifyPath: "/admin/verify-2fa"}
-	managerUI = roleUI{role: auth.RoleManager, label: "Manager", cookieName: "manager_session", loginPath: "/manager/login", homePath: "/manager", changePasswordPath: "/manager/change-password", totpVerifyPath: "/manager/verify-2fa"}
-	viewerUI  = roleUI{role: auth.RoleViewer, label: "Viewer", cookieName: "viewer_session", loginPath: "/dashboard/login", homePath: "/dashboard", changePasswordPath: "/dashboard/change-password", totpVerifyPath: "/dashboard/verify-2fa"}
+	adminUI   = roleUI{role: auth.RoleAdmin, label: "Admin", cookieName: "admin_session", loginPath: "/admin/login", homePath: "/admin", changePasswordPath: "/admin/change-password", totpVerifyPath: "/admin/verify-2fa", totpSetupPath: "/admin/2fa/setup", totpEnablePath: "/admin/2fa/enable"}
+	managerUI = roleUI{role: auth.RoleManager, label: "Manager", cookieName: "manager_session", loginPath: "/manager/login", homePath: "/manager", changePasswordPath: "/manager/change-password", totpVerifyPath: "/manager/verify-2fa", totpSetupPath: "/manager/2fa/setup", totpEnablePath: "/manager/2fa/enable"}
+	viewerUI  = roleUI{role: auth.RoleViewer, label: "Viewer", cookieName: "viewer_session", loginPath: "/dashboard/login", homePath: "/dashboard", changePasswordPath: "/dashboard/change-password", totpVerifyPath: "/dashboard/verify-2fa", totpSetupPath: "/dashboard/2fa/setup", totpEnablePath: "/dashboard/2fa/enable"}
 )
 
 // setSessionCookies issues token as every role-scoped cookie the account's role satisfies (e.g.
@@ -101,8 +103,25 @@ func (s *Server) requireRole(ui roleUI, next http.HandlerFunc) http.HandlerFunc 
 			http.Redirect(w, r, ui.totpVerifyPath, http.StatusSeeOther)
 			return
 		}
+		// Checked against the live config on every request, not carried in the session, so it
+		// covers every way a session can come to exist and applies to sessions already open.
+		if s.needs2FAEnrollment(sess) && r.URL.Path != ui.totpSetupPath && r.URL.Path != ui.totpEnablePath {
+			http.Redirect(w, r, ui.totpSetupPath, http.StatusSeeOther)
+			return
+		}
 		next(w, r)
 	}
+}
+
+// needs2FAEnrollment: 2FA is required and this session's account hasn't set it up. An account that
+// no longer exists is left to the existing checks — there is nothing for it to enrol.
+func (s *Server) needs2FAEnrollment(sess auth.Session) bool {
+	cfg := s.cfg.Load()
+	if !cfg.Auth.TwoFactorRequired() {
+		return false
+	}
+	u, ok := cfg.UserByUsername(sess.Username)
+	return ok && u.TOTPSecret == ""
 }
 
 func (s *Server) handleLoginPage(ui roleUI) http.HandlerFunc {

@@ -29,6 +29,7 @@ type UserView struct {
 	Username  string
 	Role      string
 	Locations []string // locations the account is limited to; empty = every location
+	TwoFactor bool     // the account has enrolled an authenticator app
 }
 
 // FleetView is the provisioning wizard's fleet Wi-Fi state. WifiPSKConfigured never exposes the
@@ -79,7 +80,7 @@ func Build(cfg *config.Config) View {
 
 	users := make([]UserView, 0, len(cfg.Users))
 	for _, u := range cfg.Users {
-		users = append(users, UserView{Username: u.Username, Role: u.Role, Locations: u.Locations})
+		users = append(users, UserView{Username: u.Username, Role: u.Role, Locations: u.Locations, TwoFactor: u.TOTPSecret != ""})
 	}
 
 	return View{

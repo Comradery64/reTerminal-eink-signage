@@ -101,7 +101,15 @@ type AuthConfig struct {
 	// relay allowlist (see docs) must not have this silently start trying to send mail the moment
 	// someone fills in an email address.
 	PasswordReset PasswordResetConfig `yaml:"password_reset,omitempty"`
+
+	// Require2FA makes every account enrol a second factor: until it has, the only page it can
+	// reach is its own 2FA setup. A pointer so that unset means required — a config that predates
+	// this field gets the safe default — and only an explicit `require_2fa: false` turns it off.
+	Require2FA *bool `yaml:"require_2fa,omitempty"`
 }
+
+// TwoFactorRequired reports whether every account must have 2FA enrolled (the default).
+func (a AuthConfig) TwoFactorRequired() bool { return a.Require2FA == nil || *a.Require2FA }
 
 // PasswordResetConfig configures the self-service "Forgot password?" email flow. All zero values
 // are safe and mean "disabled" — see Enabled.

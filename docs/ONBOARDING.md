@@ -14,7 +14,11 @@ the next *person* who isn't comfortable in a shell, has a real path forward.
 - **Fleet wake defaults, alerts, access grants (RBAC for admin/manager/viewer + 2FA)** — all
   `/admin` sections, all backed by the same config-persistence path. A manager or viewer can be
   limited to some locations (`/admin` → Access → "Locations this person can see"); with none
-  ticked they see every location, and admins always do.
+  ticked they see every location, and admins always do. **Two-factor authentication is required
+  for every account by default**: on first login (after replacing a temporary password) an account
+  is taken to set up an authenticator app and can't use anything else until it has. A lost phone is
+  reset by another admin (/admin → Access → Reset 2FA); `auth.require_2fa: false` turns the
+  requirement off.
 - **OTA firmware rollout** — `/admin` → Firmware sets a target version + image URL for devices
   *already deployed and networked*. This is the only firmware-related GUI surface that exists;
   see the gap below for why it doesn't cover first-time flashing.

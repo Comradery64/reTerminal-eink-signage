@@ -39,6 +39,7 @@ func (s *Server) handleAdminPage(w http.ResponseWriter, r *http.Request) {
 			data.Username = sess.Username
 			if u, ok := cfg.UserByUsername(sess.Username); ok {
 				data.TOTPEnabled = u.TOTPSecret != ""
+				data.TOTPRequired = cfg.Auth.TwoFactorRequired()
 			}
 		}
 	}
@@ -429,12 +430,17 @@ func (s *Server) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 // handlers (2FA setup/enable/disable) use this — never a client-supplied username — so a request
 // can only ever act on the account that's actually logged in.
 func (s *Server) currentAdminSession(r *http.Request) (auth.Session, bool) {
-	c, err := r.Cookie(adminUI.cookieName)
+	return s.currentSession(adminUI, r)
+}
+
+// currentSession is the same for any door: the session bound to ui's cookie, if it satisfies ui.
+func (s *Server) currentSession(ui roleUI, r *http.Request) (auth.Session, bool) {
+	c, err := r.Cookie(ui.cookieName)
 	if err != nil {
 		return auth.Session{}, false
 	}
 	sess, ok := s.sessions.Check(c.Value)
-	if !ok || !sess.Role.Satisfies(adminUI.role) {
+	if !ok || !sess.Role.Satisfies(ui.role) {
 		return auth.Session{}, false
 	}
 	return sess, true
@@ -454,21 +460,25 @@ func totpSetupQRDataURI(uri string) string {
 // handleTOTPSetupPage generates a fresh secret (not yet saved anywhere) and shows it — as a
 // scannable QR code plus the plain-text secret and otpauth:// URI as a fallback — for the account
 // holder to add to their authenticator app before confirming with a code.
-func (s *Server) handleTOTPSetupPage(w http.ResponseWriter, r *http.Request) {
-	sess, ok := s.currentAdminSession(r)
-	if !ok {
-		http.Redirect(w, r, adminUI.loginPath, http.StatusSeeOther)
-		return
+func (s *Server) handleTOTPSetupPage(ui roleUI) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sess, ok := s.currentSession(ui, r)
+		if !ok {
+			http.Redirect(w, r, ui.loginPath, http.StatusSeeOther)
+			return
+		}
+		secret := auth.NewTOTPSecret()
+		uri := auth.TOTPURI("MeetingDisplayFleet", sess.Username, secret)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_ = totpSetupPageTmpl.Execute(w, totpSetupPageView{
+			Username:   sess.Username,
+			Secret:     secret,
+			URI:        uri,
+			QRImage:    template.URL(totpSetupQRDataURI(uri)),
+			EnablePath: ui.totpEnablePath,
+			Required:   s.cfg.Load().Auth.TwoFactorRequired(),
+		})
 	}
-	secret := auth.NewTOTPSecret()
-	uri := auth.TOTPURI("MeetingDisplayFleet", sess.Username, secret)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = totpSetupPageTmpl.Execute(w, totpSetupPageView{
-		Username: sess.Username,
-		Secret:   secret,
-		URI:      uri,
-		QRImage:  template.URL(totpSetupQRDataURI(uri)),
-	})
 }
 
 // handleTOTPEnableSubmit confirms enrollment: the secret travels back in a hidden form field (safe
@@ -476,48 +486,57 @@ func (s *Server) handleTOTPSetupPage(w http.ResponseWriter, r *http.Request) {
 // client able to affect any other account) and is only ever persisted once a real code from it
 // verifies. On a wrong code, redisplays the SAME secret directly (not a redirect) so it never
 // appears in a URL or a server log.
-func (s *Server) handleTOTPEnableSubmit(w http.ResponseWriter, r *http.Request) {
-	sess, ok := s.currentAdminSession(r)
-	if !ok {
-		http.Redirect(w, r, adminUI.loginPath, http.StatusSeeOther)
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
-		return
-	}
-	secret := r.PostForm.Get("secret")
-	if !auth.VerifyTOTP(secret, r.PostForm.Get("code"), time.Now()) {
-		uri := auth.TOTPURI("MeetingDisplayFleet", sess.Username, secret)
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_ = totpSetupPageTmpl.Execute(w, totpSetupPageView{
-			Username: sess.Username,
-			Secret:   secret,
-			URI:      uri,
-			QRImage:  template.URL(totpSetupQRDataURI(uri)),
-			Error:    true,
-		})
-		return
-	}
+func (s *Server) handleTOTPEnableSubmit(ui roleUI) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sess, ok := s.currentSession(ui, r)
+		if !ok {
+			http.Redirect(w, r, ui.loginPath, http.StatusSeeOther)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "bad form", http.StatusBadRequest)
+			return
+		}
+		secret := r.PostForm.Get("secret")
+		if !auth.VerifyTOTP(secret, r.PostForm.Get("code"), time.Now()) {
+			uri := auth.TOTPURI("MeetingDisplayFleet", sess.Username, secret)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_ = totpSetupPageTmpl.Execute(w, totpSetupPageView{
+				Username:   sess.Username,
+				Secret:     secret,
+				URI:        uri,
+				QRImage:    template.URL(totpSetupQRDataURI(uri)),
+				Error:      true,
+				EnablePath: ui.totpEnablePath,
+				Required:   s.cfg.Load().Auth.TwoFactorRequired(),
+			})
+			return
+		}
 
-	existing, ok := s.cfg.Load().UserByUsername(sess.Username)
-	if !ok {
-		http.Redirect(w, r, adminUI.loginPath, http.StatusSeeOther)
-		return
+		existing, ok := s.cfg.Load().UserByUsername(sess.Username)
+		if !ok {
+			http.Redirect(w, r, ui.loginPath, http.StatusSeeOther)
+			return
+		}
+		existing.TOTPSecret = secret
+		newCfg, err := s.cfg.Load().WithUser(existing)
+		if err != nil {
+			s.log.Error("2fa enable rejected", "username", sess.Username, "err", err)
+			http.Redirect(w, r, ui.homePath+"?error="+template.URLQueryEscaper(err.Error())+"#security", http.StatusSeeOther)
+			return
+		}
+		if err := s.applyConfig(r.Context(), newCfg, true); err != nil {
+			s.log.Error("2fa enable failed to persist", "username", sess.Username, "err", err)
+			http.Redirect(w, r, ui.homePath+"?error="+template.URLQueryEscaper(err.Error())+"#security", http.StatusSeeOther)
+			return
+		}
+		s.log.Info("2fa enrolled", "username", sess.Username)
+		if ui.role == adminUI.role {
+			http.Redirect(w, r, "/admin?saved=security#security", http.StatusSeeOther)
+			return
+		}
+		http.Redirect(w, r, ui.homePath, http.StatusSeeOther)
 	}
-	existing.TOTPSecret = secret
-	newCfg, err := s.cfg.Load().WithUser(existing)
-	if err != nil {
-		s.log.Error("2fa enable rejected", "username", sess.Username, "err", err)
-		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#security", http.StatusSeeOther)
-		return
-	}
-	if err := s.applyConfig(r.Context(), newCfg, true); err != nil {
-		s.log.Error("2fa enable failed to persist", "username", sess.Username, "err", err)
-		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(err.Error())+"#security", http.StatusSeeOther)
-		return
-	}
-	http.Redirect(w, r, "/admin?saved=security#security", http.StatusSeeOther)
 }
 
 // handleTOTPDisableSubmit requires a current code (not just an active session) before turning 2FA
@@ -526,6 +545,12 @@ func (s *Server) handleTOTPDisableSubmit(w http.ResponseWriter, r *http.Request)
 	sess, ok := s.currentAdminSession(r)
 	if !ok {
 		http.Redirect(w, r, adminUI.loginPath, http.StatusSeeOther)
+		return
+	}
+	if s.cfg.Load().Auth.TwoFactorRequired() {
+		// Letting an account switch its own 2FA off would undo the requirement; a lost device is
+		// an admin's "Reset 2FA" (the account then re-enrols), not a self-service downgrade.
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper("2FA is required for every account, so it can't be turned off.")+"#security", http.StatusSeeOther)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -562,6 +587,10 @@ type totpSetupPageView struct {
 	// server-side secret; nothing in it is attacker-controlled.
 	QRImage template.URL // empty if QR encoding failed (falls back to secret/URI text only)
 	Error   bool
+	// EnablePath is the door's own enable URL, so the form posts back to the door it came from.
+	EnablePath string
+	// Required: the account can't continue until it finishes this page.
+	Required bool
 }
 
 var totpSetupPageTmpl = template.Must(template.New("2fa-setup").Parse(`<!doctype html>
@@ -587,13 +616,14 @@ button[type=submit] { width: 100%; }
 <div class="surface login-card">
 ` + brandMark + `
 <h1>Enable two-factor authentication</h1>
+{{if .Required}}<p><strong>Two-factor authentication is required for every account.</strong> Set it up now to continue.</p>{{end}}
 <p>Scan this with your authenticator app (or enter the setup key below if it can't scan) to add
 this account ({{.Username}}).</p>
 {{if .QRImage}}<img class="qr" src="{{.QRImage}}" width="220" height="220" alt="Scannable QR code for this account's 2FA setup key">{{end}}
 <div class="secret">{{.Secret}}</div>
 <div class="uri">{{.URI}}</div>
 {{if .Error}}<p class="banner banner-error">Incorrect or expired code — try again.</p>{{end}}
-<form method="POST" action="/admin/2fa/enable">
+<form method="POST" action="{{.EnablePath}}">
 <input type="hidden" name="secret" value="{{.Secret}}">
 <label for="enable-code">Enter the current 6-digit code to confirm</label>
 <input id="enable-code" type="text" name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autofocus required autocomplete="one-time-code">
@@ -647,6 +677,7 @@ type adminPageData struct {
 	SavedSection  string // e.g. "rooms" — which section to flash, empty on a plain page load
 	Username      string // current session's own account — 2FA is self-service, not admin-on-admin
 	TOTPEnabled   bool
+	TOTPRequired  bool
 	PersistStrip  persistStripView // standing config-persistence status, rendered on every page load
 	Notifications notificationsPanel
 	Locations     locationsPanel
@@ -885,18 +916,23 @@ this account has been signed out: <span class="mono">{{.ResetPassword}}</span><b
 They'll be asked to set their own password on next login.
 </div>{{end}}
 <table>
-<tr><th>Username</th><th>Role</th><th>Locations</th><th></th></tr>
+<tr><th>Username</th><th>Role</th><th>Locations</th><th>2FA</th><th></th></tr>
 {{$me := .Username}}
 {{range .View.Users}}
 <tr>
 <td class="mono">{{.Username}}</td><td>{{.Role}}</td>
 <td>{{if eq .Role "admin"}}<span class="hint">all (admin)</span>{{else if .Locations}}{{range $i, $l := .Locations}}{{if $i}}, {{end}}<span class="mono">{{$l}}</span>{{end}}{{else}}<span class="hint">all</span>{{end}}</td>
+<td>{{if .TwoFactor}}on{{else}}<span class="hint">not set up</span>{{end}}</td>
 <td><button type="button" class="linklike" data-edit-user
   data-username="{{.Username}}" data-role="{{.Role}}" data-locations="{{range .Locations}}{{.}},{{end}}">Edit</button>
 <form method="POST" action="/admin/access/reset-password" style="display:inline">
 <input type="hidden" name="username" value="{{.Username}}">
 <button type="submit" class="linklike" onclick="return confirm('Reset {{.Username}}\'s password? They will be signed out everywhere and must set a new password.')">Reset password</button>
 </form>
+{{if and .TwoFactor (ne .Username $me)}}<form method="POST" action="/admin/access/reset-2fa" style="display:inline">
+<input type="hidden" name="username" value="{{.Username}}">
+<button type="submit" class="linklike" onclick="return confirm('Reset {{.Username}}\'s 2FA? They will be signed out and must set up their authenticator again.')">Reset 2FA</button>
+</form>{{end}}
 {{if eq .Username $me}}<span class="mono" title="You can't revoke your own account">(you)</span>{{else}}<form method="POST" action="/admin/access/delete" style="display:inline">
 <input type="hidden" name="username" value="{{.Username}}">
 <button type="submit" class="danger" onclick="return confirm('Revoke access for {{.Username}}?')">Revoke</button>
@@ -931,6 +967,7 @@ They'll be asked to set their own password on next login.
 another admin's code, each account enrolls its own authenticator app.</p>
 {{if .TOTPEnabled}}
 <p class="chip chip-ok">Enabled</p>
+{{if .TOTPRequired}}<p class="hint">Required for every account, so it can't be turned off here. If someone loses their device, use "Reset 2FA" next to their name under Access.</p>{{else}}
 <details class="surface add-room">
 <summary>Disable two-factor authentication</summary>
 <form method="POST" action="/admin/2fa/disable">
@@ -938,7 +975,7 @@ another admin's code, each account enrolls its own authenticator app.</p>
 <input id="disable-code" type="text" name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required autocomplete="one-time-code">
 <button type="submit" class="danger">Disable 2FA</button>
 </form>
-</details>
+</details>{{end}}
 {{else}}
 <p class="chip chip-warn">Not enabled</p>
 <p><a href="/admin/2fa/setup">Enable two-factor authentication</a></p>

@@ -174,6 +174,14 @@ rooms:
 #     lark_chat_id: "oc_yyyyyyyy"
 #     delivery: both
 # default_location: "building-a"
+# Every account must set up two-factor authentication (an authenticator app) before it can use the
+# web UI; it's on unless you turn it off. A user who loses their phone is reset by another admin
+# (/admin -> Access -> Reset 2FA). If the only admin loses theirs, set require_2fa: false and remove
+# that user's totp_secret in the config, restart, and have them enrol again.
+# auth:
+#   session_secret: "${SESSION_SECRET}"
+#   require_2fa: true   # default; false turns the requirement off
+#
 # A manager or viewer can be limited to some offices (their rooms, previews and push alerts);
 # none listed = every location, and an admin always sees everything. Normally set in /admin → Access.
 # users:
