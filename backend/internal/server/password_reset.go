@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"html/template"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -118,4 +119,49 @@ func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request
 	s.resets.put(nonce, &passwordReset{username: username, password: password, expires: time.Now().Add(passwordResetTTL)})
 	s.log.Info("admin reset a user's password", "username", username)
 	http.Redirect(w, r, "/admin?reset="+nonce+"#access", http.StatusSeeOther)
+}
+
+// handleAdminReset2FA clears another account's enrolled authenticator — the recovery for a lost or
+// replaced phone. With 2FA required the account is sent straight back to set up a new one on its
+// next request, and every live session for it is revoked so none outlives the reset. An admin
+// can't reset their own (a stolen session would otherwise be able to drop its own second factor);
+// a second admin does it, or the operator edits the config.
+func (s *Server) handleAdminReset2FA(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	username := r.PostForm.Get("username")
+	fail := func(msg string) {
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper(msg)+"#access", http.StatusSeeOther)
+	}
+	if strings.EqualFold(username, s.sessionUsername(adminUI, r)) {
+		fail("you can't reset your own 2FA — ask another admin.")
+		return
+	}
+	cfg := s.cfg.Load()
+	existing, ok := cfg.UserByUsername(username)
+	switch {
+	case !ok:
+		fail("no such user " + username)
+		return
+	case existing.TOTPSecret == "":
+		fail(username + " has no 2FA set up.")
+		return
+	}
+	existing.TOTPSecret = ""
+	newCfg, err := cfg.WithUser(existing)
+	if err != nil {
+		s.log.Error("admin 2fa reset rejected", "username", username, "err", err)
+		fail(err.Error())
+		return
+	}
+	if err := s.applyConfig(r.Context(), newCfg, true); err != nil {
+		s.log.Error("admin 2fa reset failed to persist", "username", username, "err", err)
+		fail(err.Error())
+		return
+	}
+	s.sessions.RevokeByUsername(username)
+	s.log.Info("admin reset a user's 2FA", "username", username, "by", s.sessionUsername(adminUI, r))
+	http.Redirect(w, r, "/admin?saved=access", http.StatusSeeOther)
 }

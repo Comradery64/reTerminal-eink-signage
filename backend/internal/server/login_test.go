@@ -48,7 +48,7 @@ func testServerWithAuth(t *testing.T) *Server {
 			{Username: testManagerUsername, PasswordSHA256: hashHex(testManagerPassword), Role: "manager"},
 			{Username: testViewerUsername, PasswordSHA256: hashHex(testViewerPassword), Role: "viewer"},
 		},
-		Auth: config.AuthConfig{SessionSecret: "01234567890123456789012345678901"},
+		Auth: config.AuthConfig{SessionSecret: "01234567890123456789012345678901", Require2FA: boolPtr(false)}, // the 2FA-required tests turn it back on
 	}
 	cfg.Wake.Timezone = "UTC"
 	cfg.Alerts = config.AlertConfig{LowBatteryPct: 45, ClearPct: 55, MinRenotify: 24 * time.Hour, StaleAfter: time.Hour}
@@ -410,3 +410,5 @@ func TestForcedPasswordChangeAppliesInMemoryWhenPersistFails(t *testing.T) {
 		t.Fatalf("manager page must surface the real persist failure in its persistence strip, got:\n%s", body)
 	}
 }
+
+func boolPtr(b bool) *bool { return &b }
