@@ -257,6 +257,8 @@ func (c *Config) validateLocations() error {
 			return fmt.Errorf("locations[%d]: id is required", i)
 		case seen[l.ID]:
 			return fmt.Errorf("locations: duplicate id %q", l.ID)
+		case strings.Contains(l.ID, ","):
+			return fmt.Errorf("location id %q can't contain a comma", l.ID)
 		case strings.TrimSpace(l.Name) == "":
 			return fmt.Errorf("location %q: name is required", l.ID)
 		case l.LarkUserEmail != "" && !validEmail(l.LarkUserEmail):
@@ -271,6 +273,21 @@ func (c *Config) validateLocations() error {
 			return fmt.Errorf("location %q: delivery %q needs lark_chat_id", l.ID, l.Delivery)
 		}
 		seen[l.ID] = true
+	}
+	for _, u := range c.Users {
+		if u.Role == "admin" && len(u.Locations) > 0 {
+			return fmt.Errorf("user %q: admins always see every location, so they can't be limited to some", u.Username)
+		}
+		listed := map[string]bool{}
+		for _, id := range u.Locations {
+			switch {
+			case !seen[id]:
+				return fmt.Errorf("user %q: unknown location %q", u.Username, id)
+			case listed[id]:
+				return fmt.Errorf("user %q: location %q is listed twice", u.Username, id)
+			}
+			listed[id] = true
+		}
 	}
 	if len(c.Locations) > 0 && c.DefaultLocation == "" {
 		return fmt.Errorf("default_location is required when locations are configured (rooms without a location use it)")
@@ -355,6 +372,13 @@ func (c *Config) WithoutLocation(id string) (*Config, error) {
 	for _, r := range c.Rooms {
 		if r.Location == id {
 			return nil, fmt.Errorf("room %q is in location %q; move it first", r.DeviceID, id)
+		}
+	}
+	// An emptied list means "sees everything", so a location still on someone's list must be
+	// taken off it first rather than silently widening that account's access.
+	for _, u := range c.Users {
+		if u.CanSeeLocation(id) && u.Limited() {
+			return nil, fmt.Errorf("user %q is limited to location %q; edit their access first", u.Username, id)
 		}
 	}
 	next := c.clone()

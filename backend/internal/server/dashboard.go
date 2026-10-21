@@ -74,8 +74,12 @@ func (s *Server) handleDashboardPage(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	devices := status.Build(cfg, s.tlm, now)
 
+	visible := s.roomVisible(viewerUI, r)
 	rows := make([]dashboardRow, 0, len(devices))
 	for _, d := range devices {
+		if !visible(d.DeviceID) {
+			continue
+		}
 		row := dashboardRow{Device: d, BatteryBar: batteryGauge(d.BatteryPct), StatusLabel: friendlyStatusLabel(d.Status)}
 		if d.Status == "unreported" {
 			row.LastSeenText = "unknown"
@@ -140,6 +144,10 @@ func (s *Server) handleDashboardPage(w http.ResponseWriter, r *http.Request) {
 // encoding of the same composed image, cached alongside it since the last poll.
 func (s *Server) handleDashboardPreview(w http.ResponseWriter, r *http.Request) {
 	deviceID := r.PathValue("device_id")
+	if !s.roomVisible(viewerUI, r)(deviceID) {
+		http.NotFound(w, r) // the same answer as an unknown device, so a limited user can't probe for rooms
+		return
+	}
 	entry, ok := s.cache.Get(deviceID)
 	if !ok || len(entry.PreviewPNG) == 0 {
 		http.NotFound(w, r)

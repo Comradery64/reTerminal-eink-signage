@@ -174,3 +174,10 @@ rooms:
 #     lark_chat_id: "oc_yyyyyyyy"
 #     delivery: both
 # default_location: "building-a"
+# A manager or viewer can be limited to some offices (their rooms, previews and push alerts);
+# none listed = every location, and an admin always sees everything. Normally set in /admin → Access.
+# users:
+#   - username: "front-desk-b"
+#     role: viewer
+#     password_sha256: "REPLACE_WITH_SHA256_OF_PASSWORD"
+#     locations: ["building-b"]

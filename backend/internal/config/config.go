@@ -155,7 +155,31 @@ type User struct {
 	// auth.PasswordReset.Enabled) — a user with no Email configured simply can't use self-service
 	// recovery; every existing config keeps loading unchanged without it.
 	Email string `yaml:"email,omitempty"`
+
+	// Locations limits which offices this account can see in /manager and /dashboard (rooms,
+	// wake-mode control, previews, browser-push alerts). Empty means every location, as before.
+	// Admins always see everything, so an admin with a list is rejected rather than ignored.
+	Locations []string `yaml:"locations,omitempty"`
 }
+
+// Limited reports whether the account is restricted to some locations. Admins never are.
+func (u User) Limited() bool { return u.Role != "admin" && len(u.Locations) > 0 }
+
+// CanSeeLocation is whether the account may see the given location's rooms and alerts.
+func (u User) CanSeeLocation(location string) bool {
+	if !u.Limited() {
+		return true
+	}
+	for _, l := range u.Locations {
+		if l == location {
+			return true
+		}
+	}
+	return false
+}
+
+// CanSeeRoom is CanSeeLocation for a room's location (its own, else the default).
+func (c *Config) CanSeeRoom(u User, room Room) bool { return u.CanSeeLocation(c.LocationOf(room)) }
 
 // FirmwareConfig drives OTA. The broker advertises Version+URL to devices via response headers;
 // a device whose running build differs downloads the signed image at URL and reboots into it.
@@ -862,6 +886,9 @@ func (c *Config) clone() *Config {
 	next := *c
 	next.Rooms = append([]Room(nil), c.Rooms...)
 	next.Users = append([]User(nil), c.Users...)
+	for i := range next.Users {
+		next.Users[i].Locations = append([]string(nil), c.Users[i].Locations...)
+	}
 	next.Alerts.Channels = append([]string(nil), c.Alerts.Channels...)
 	next.PushSubscriptions = append([]PushSubscription(nil), c.PushSubscriptions...)
 	next.Locations = append([]Location(nil), c.Locations...)

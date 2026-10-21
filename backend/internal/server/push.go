@@ -89,6 +89,11 @@ func (s *Server) handlePushSubscribe(ui roleUI) http.HandlerFunc {
 			return
 		}
 		user := s.sessionUsername(ui, r)
+		if acct, ok := s.sessionAccount(ui, r); !ok || (acct.Limited() && !acct.CanSeeLocation(req.Location)) {
+			// A limited account can't pick "every location" (""), or an office that isn't theirs.
+			http.Error(w, "that location isn't available to your account", http.StatusForbidden)
+			return
+		}
 		next, err := s.cfg.Load().WithPushSubscription(config.PushSubscription{
 			Username: user, Location: req.Location, Endpoint: req.Endpoint, P256DH: req.Keys.P256DH, Auth: req.Keys.Auth,
 			Created: time.Now().UTC().Truncate(time.Second),
@@ -141,16 +146,25 @@ type notificationsView struct {
 	VAPIDPublicKey string
 	Devices        int
 	Locations      []config.Location
+	AllowEvery     bool // offer "Every location" — not for accounts limited to some locations
 }
 
 func (s *Server) handleNotificationsPage(ui roleUI) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		acct, _ := s.sessionAccount(ui, r)
+		var locs []config.Location
+		for _, l := range s.cfg.Load().Locations {
+			if acct.CanSeeLocation(l.ID) {
+				locs = append(locs, l)
+			}
+		}
 		_ = notificationsPageTmpl.Execute(w, notificationsView{
 			Base:           ui.homePath,
 			VAPIDPublicKey: s.vapidKey(),
 			Devices:        len(s.cfg.Load().PushSubscriptionsFor(s.sessionUsername(ui, r))),
-			Locations:      s.cfg.Load().Locations,
+			Locations:      locs,
+			AllowEvery:     !acct.Limited(),
 		})
 	}
 }
@@ -183,7 +197,7 @@ the <code>webpush</code> channel.</p>
 <p class="muted">Your account has notifications on {{.Devices}} browser(s).</p>
 <p id="state">Checking…</p>
 {{if .Locations}}<p><label for="loc">Alerts for</label>
-<select id="loc">{{range .Locations}}<option value="{{.ID}}">{{.Name}}</option>{{end}}<option value="">Every location</option></select></p>{{end}}
+<select id="loc">{{range .Locations}}<option value="{{.ID}}">{{.Name}}</option>{{end}}{{if .AllowEvery}}<option value="">Every location</option>{{end}}</select></p>{{end}}
 <button id="enable" hidden>Enable notifications on this browser</button>
 <button id="disable" class="secondary" hidden>Turn off on this browser</button>
 <script>
