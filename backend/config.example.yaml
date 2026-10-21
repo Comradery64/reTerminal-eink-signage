@@ -181,6 +181,9 @@ rooms:
 # auth:
 #   session_secret: "${SESSION_SECRET}"
 #   require_2fa: true   # default; false turns the requirement off
+#   # Keep logins across restarts/deploys (a file on a persistent volume; only token hashes are
+#   # stored). Unset = sessions live in memory and every restart signs everyone out.
+#   session_store_path: "/var/lib/meeting-displays/sessions.json"
 #
 # A manager or viewer can be limited to some offices (their rooms, previews and push alerts);
 # none listed = every location, and an admin always sees everything. Normally set in /admin → Access.

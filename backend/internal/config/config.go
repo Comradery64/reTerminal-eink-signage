@@ -106,6 +106,11 @@ type AuthConfig struct {
 	// reach is its own 2FA setup. A pointer so that unset means required — a config that predates
 	// this field gets the safe default — and only an explicit `require_2fa: false` turns it off.
 	Require2FA *bool `yaml:"require_2fa,omitempty"`
+
+	// SessionStorePath, when set, keeps logins on disk (a file on a persistent volume) so a broker
+	// restart or deploy doesn't sign everyone out. Empty keeps sessions in memory only. Only the
+	// SHA-256 of each session token is stored.
+	SessionStorePath string `yaml:"session_store_path,omitempty"`
 }
 
 // TwoFactorRequired reports whether every account must have 2FA enrolled (the default).

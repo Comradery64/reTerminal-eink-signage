@@ -88,6 +88,13 @@ func New(cfg *config.Live, c *cache.Store, tlm *telemetry.Store, alerts *notify.
 		forgotPasswordLimiter: newRateLimiter(),
 		log:                   log,
 	}
+	if path := cfg.Load().Auth.SessionStorePath; path != "" {
+		// A store that can't be loaded or saved is logged, never fatal: the worst case is that
+		// people sign in again, which is how it behaved before sessions were persisted.
+		if err := s.sessions.Persist(path, func(err error) { log.Error("session store", "err", err) }); err != nil {
+			log.Error("session store not restored", "err", err)
+		}
+	}
 	s.refreshDerived(cfg.Load())
 	// Seed the strip/API with the resolved backend's identity before any write ever happens, so
 	// the very first /admin page load already shows the truth instead of a blank "healthy" state
