@@ -4,6 +4,7 @@ import (
 	"html/template"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/status"
@@ -58,7 +59,7 @@ func (s *Server) handleManagerPage(w http.ResponseWriter, r *http.Request) {
 	data := managerPageData{Rows: rows, SavedRoom: r.URL.Query().Get("saved"), PersistStrip: s.persistStrip()}
 	switch r.URL.Query().Get("error") {
 	case "invalid_interval":
-		data.ErrorMsg = "Enter a whole number of minutes for Simple mode — that value didn't save."
+		data.ErrorMsg = "Enter a whole number of seconds, 60 or more, for Simple mode (or leave it blank to follow the fleet default) — that value didn't save."
 	case "rejected":
 		data.ErrorMsg = "That change didn't save. Try again, or ask IT if it keeps failing."
 	case "persist":
@@ -87,18 +88,30 @@ func (s *Server) handleManagerSaveWake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	cfg := s.cfg.Load()
+	modeOverride := &mode
 	var flatSeconds *uint32
 	if mode == "flat" {
-		secs, err := strconv.ParseUint(r.PostForm.Get("interval_seconds"), 10, 32)
-		if err != nil || secs == 0 {
-			http.Redirect(w, r, "/manager?error=invalid_interval", http.StatusSeeOther)
-			return
+		switch raw := strings.TrimSpace(r.PostForm.Get("interval_seconds")); raw {
+		case "", "0":
+			// Simple with no interval of its own: the room follows the fleet's intervals. When the
+			// fleet is already Simple that means no override at all, so the room keeps tracking the
+			// fleet default instead of being pinned to today's.
+			if fleet := cfg.Wake.Mode; fleet == "" || fleet == "flat" {
+				modeOverride = nil
+			}
+		default:
+			secs, err := strconv.ParseUint(raw, 10, 32)
+			if err != nil || secs < 60 { // the form's own minimum; faster would drain the battery
+				http.Redirect(w, r, "/manager?error=invalid_interval", http.StatusSeeOther)
+				return
+			}
+			v := uint32(secs)
+			flatSeconds = &v
 		}
-		v := uint32(secs)
-		flatSeconds = &v
 	}
 
-	newCfg, err := s.cfg.Load().WithRoomWakeOverride(deviceID, &mode, flatSeconds)
+	newCfg, err := cfg.WithRoomWakeOverride(deviceID, modeOverride, flatSeconds)
 	if err != nil {
 		s.log.Error("manager wake save rejected", "device", deviceID, "err", err)
 		http.Redirect(w, r, "/manager?error=rejected", http.StatusSeeOther)
@@ -170,7 +183,7 @@ var managerPageTmpl = template.Must(template.New("manager").Parse(`<!doctype htm
 <label for="mode-{{.DeviceID}}-flat">Simple</label>
 </div>
 <div class="interval-wrap">
-<input type="number" name="interval_seconds" min="60" step="60" value="{{.FlatIntervalSeconds}}" placeholder="Seconds between checks">
+<input type="number" name="interval_seconds" min="60" step="60" {{if .FlatIntervalSeconds}}value="{{.FlatIntervalSeconds}}"{{end}} placeholder="Blank = fleet default (seconds)">
 </div>
 <button type="submit">Save</button>
 </form>
