@@ -241,6 +241,10 @@ type AlertConfig struct {
 	LarkApp            LarkAppConfig `yaml:"lark_app,omitempty"`              // app_secret is a secret: "${LARK_APP_SECRET}"
 	LarkFallbackChatID string        `yaml:"lark_fallback_chat_id,omitempty"` // group (oc_…) used only when a location's person can't be reached
 	WebPush            WebPushConfig `yaml:"webpush,omitempty"`
+
+	// MessageStyle is how alert messages read: "plain" (default; what's wrong and what to do),
+	// "minimal" (one short line) or "detailed" (adds device ID and raw readings).
+	MessageStyle string `yaml:"message_style,omitempty"`
 }
 
 type WakeConfig struct {

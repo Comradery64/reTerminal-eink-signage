@@ -57,6 +57,12 @@ alerts:
   low_battery_pct: 45        # fire at/below this; 45 (not 40) gives buffer since LiPo %→V is nonlinear
   clear_pct: 55              # re-arm only after charging back above this (hysteresis)
   min_renotify: "24h"        # if still low, remind at most once per day
+  # How alert messages read. Changed in /admin -> Alerts, applied to the next alert (no restart).
+  #   plain    (default) what is wrong and what to do: "Low battery: Aspen (45%) / Please recharge
+  #            or replace it soon."
+  #   minimal  one short line: "Aspen: battery 45%"
+  #   detailed adds the device ID and raw readings (millivolts), for troubleshooting
+  # message_style: plain
   # Where alerts go (low battery, display offline, display back online). Any of:
   #   lark    — Lark custom app: DMs each location's person (see locations below); lark_app below
   #   webpush — browser notifications to admins/managers who clicked "Enable notifications" at
