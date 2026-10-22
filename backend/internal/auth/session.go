@@ -6,7 +6,14 @@ package auth
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -72,10 +79,22 @@ type Session struct {
 // (rather than a signed stateless cookie) is deliberate: this is a single-replica broker, so
 // there's no cross-instance session-sharing problem to solve, and a server-side map gets instant
 // logout/revocation for free.
+//
+// Sessions are keyed by the SHA-256 of the token, never the token itself, so that if the store is
+// persisted (see Persist) the file holds nothing that can be replayed as a cookie.
 type SessionStore struct {
 	mu  sync.RWMutex
-	m   map[string]sessionEntry
+	m   map[string]sessionEntry // key(token) -> entry
 	ttl time.Duration
+
+	path  string      // "" = memory only
+	onErr func(error) // told about a failed save; the store keeps working in memory either way
+}
+
+// key is how a token is stored: its SHA-256, hex.
+func key(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
 
 // NewSessionStore builds an empty store with the given session lifetime.
@@ -87,7 +106,8 @@ func NewSessionStore(ttl time.Duration) *SessionStore {
 func (s *SessionStore) Create(role Role, username string, flags SessionFlags) string {
 	token := newToken()
 	s.mu.Lock()
-	s.m[token] = sessionEntry{role: role, username: username, flags: flags, expires: time.Now().Add(s.ttl)}
+	s.m[key(token)] = sessionEntry{role: role, username: username, flags: flags, expires: time.Now().Add(s.ttl)}
+	s.saveLocked()
 	s.mu.Unlock()
 	return token
 }
@@ -97,7 +117,7 @@ func (s *SessionStore) Create(role Role, username string, flags SessionFlags) st
 // entries for that to matter.
 func (s *SessionStore) Check(token string) (Session, bool) {
 	s.mu.RLock()
-	e, ok := s.m[token]
+	e, ok := s.m[key(token)]
 	s.mu.RUnlock()
 	if !ok {
 		return Session{}, false
@@ -112,7 +132,8 @@ func (s *SessionStore) Check(token string) (Session, bool) {
 // Revoke deletes token, e.g. on logout.
 func (s *SessionStore) Revoke(token string) {
 	s.mu.Lock()
-	delete(s.m, token)
+	delete(s.m, key(token))
+	s.saveLocked()
 	s.mu.Unlock()
 }
 
@@ -123,11 +144,104 @@ func (s *SessionStore) Revoke(token string) {
 func (s *SessionStore) RevokeByUsername(username string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for token, e := range s.m {
+	for k, e := range s.m {
 		if strings.EqualFold(e.username, username) {
-			delete(s.m, token)
+			delete(s.m, k)
 		}
 	}
+	s.saveLocked()
+}
+
+// persistedSession is a session as written to disk. The token itself is never stored, only its hash.
+type persistedSession struct {
+	Key                string    `json:"key"`
+	Role               Role      `json:"role"`
+	Username           string    `json:"username"`
+	MustChangePassword bool      `json:"must_change_password,omitempty"`
+	Pending2FA         bool      `json:"pending_2fa,omitempty"`
+	Expires            time.Time `json:"expires"`
+}
+
+type persistedFile struct {
+	Version  int                `json:"version"`
+	Sessions []persistedSession `json:"sessions"`
+}
+
+// Persist keeps the store on disk at path so logins survive a restart: it loads any sessions
+// already there (dropping expired ones) and from then on rewrites the file on every change. A
+// missing file is normal (first run). A file that can't be read or parsed is reported and the store
+// starts empty — everyone logs in again, which is the safe direction. onErr is told about later
+// failed saves; the store keeps working in memory regardless.
+func (s *SessionStore) Persist(path string, onErr func(error)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.path, s.onErr = path, onErr
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read session store: %w", err)
+	}
+	var f persistedFile
+	if err := json.Unmarshal(raw, &f); err != nil || f.Version != 1 {
+		return fmt.Errorf("session store %s is unreadable or from another version; starting with no sessions", filepath.Base(path))
+	}
+	now := time.Now()
+	for _, p := range f.Sessions {
+		if p.Key == "" || !now.Before(p.Expires) {
+			continue
+		}
+		s.m[p.Key] = sessionEntry{role: p.Role, username: p.Username,
+			flags: SessionFlags{MustChangePassword: p.MustChangePassword, Pending2FA: p.Pending2FA}, expires: p.Expires}
+	}
+	return nil
+}
+
+// saveLocked rewrites the file with the live sessions. Caller holds s.mu. It writes a temp file in
+// the same directory (mode 0600) and renames it over the old one, so a crash never leaves a
+// half-written store.
+func (s *SessionStore) saveLocked() {
+	if s.path == "" {
+		return
+	}
+	now := time.Now()
+	f := persistedFile{Version: 1, Sessions: []persistedSession{}}
+	for k, e := range s.m {
+		if !now.Before(e.expires) {
+			delete(s.m, k)
+			continue
+		}
+		f.Sessions = append(f.Sessions, persistedSession{Key: k, Role: e.role, Username: e.username,
+			MustChangePassword: e.flags.MustChangePassword, Pending2FA: e.flags.Pending2FA, Expires: e.expires})
+	}
+	raw, err := json.Marshal(f)
+	if err == nil {
+		err = writeFileAtomic(s.path, raw)
+	}
+	if err != nil && s.onErr != nil {
+		s.onErr(fmt.Errorf("save session store: %w", err))
+	}
+}
+
+func writeFileAtomic(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".sessions-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name()) // no-op once renamed
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 // newToken returns a 32-byte crypto/rand value, base64url-encoded for safe use as a cookie value.

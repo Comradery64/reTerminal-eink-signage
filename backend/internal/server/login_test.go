@@ -412,3 +412,14 @@ func TestForcedPasswordChangeAppliesInMemoryWhenPersistFails(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// serverAt is a test server like testServerWithAuth whose sessions are stored at path; calling it
+// again with the same path is a restart.
+func serverAt(t *testing.T, path string) *Server {
+	t.Helper()
+	base := testServerWithAuth(t)
+	c := *base.cfg.Load()
+	c.Auth.SessionStorePath = path
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return New(config.NewLive(&c), cache.New(), telemetry.New(), notify.NewManager("", 45, 55, 24*time.Hour, log), noopPersistStore{}, log)
+}
