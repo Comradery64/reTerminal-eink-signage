@@ -62,6 +62,22 @@ roleRef:
 # config.seed.yaml.example (`kubectl create configmap`, which refuses to overwrite).
 # Provider credentials + per-device tokens are not here either; see secret.yaml.example.
 ---
+# Small persistent volume for state that must survive a restart: login sessions
+# (`auth.session_store_path`, token hashes only) and the sqlite telemetry history
+# (`telemetry.backend: sqlite`). Optional: without it (and without those two config keys) sessions
+# and telemetry live in memory and every restart signs everyone out and empties the dashboard.
+# Set `storageClassName` if your cluster has no default class.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: broker-state
+  namespace: meeting-displays
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -70,7 +86,7 @@ metadata:
 spec:
   replicas: 1            # single writer to the cache; scale via leader election if ever needed
   strategy:
-    type: RollingUpdate
+    type: Recreate   # RWO state volume: a rolling update can deadlock on Multi-Attach across nodes
   selector:
     matchLabels: { app: broker }
   template:
@@ -85,6 +101,8 @@ spec:
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532          # distroless 'nonroot' UID — numeric so kubelet can verify non-root
+        fsGroup: 65532            # so the non-root broker can write the state volume
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: broker
@@ -126,6 +144,9 @@ spec:
               mountPath: /etc/meeting-displays/config.yaml
               subPath: config.yaml
               readOnly: true
+            # Matches the `/var/lib/meeting-displays/...` paths in config.example.yaml.
+            - name: state
+              mountPath: /var/lib/meeting-displays
             # Keyless Google auth (WIF): the external-account cred config + the projected token it reads.
             - name: gcp-credconfig
               mountPath: /etc/gcp
@@ -149,6 +170,8 @@ spec:
       volumes:
         - name: config
           configMap: { name: broker-config }
+        - name: state
+          persistentVolumeClaim: { claimName: broker-state }
         - name: gcp-credconfig
           configMap: { name: broker-gcp-credconfig }   # external-account cred config (not secret)
         # Projected SA token: k8s mints a short-lived JWT with the WIF provider as audience.
