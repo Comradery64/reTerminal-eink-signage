@@ -43,7 +43,7 @@ done < "$CSV"
 cat <<EOF
 
 Provisioned $n device(s).
-  • $SNIPPET        ← paste this rooms: block into config.yaml / the broker ConfigMap
+  • $SNIPPET        ← paste this rooms: block into config.yaml (Tiers 1/2) or config.seed.yaml before first install (Tier 3); on a running broker add the room in /admin → Rooms
   • $TOKENS  ← SECRET: device_id + token, used when flashing each unit (Phase 3). Do not commit.
 
 Next: Google auth is keyless (WIF) — no SA key. The only secret is the optional alert webhook:

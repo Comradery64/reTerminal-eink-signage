@@ -43,8 +43,12 @@ Reach for **Tier 3** if:
   Deployment is near zero.
 - You already have kube-prometheus-stack + Grafana and want the fleet dashboard to live there
   instead of (or alongside) the broker's built-in `/status` page.
-- You need the ConfigMap-as-source-of-truth GitOps workflow (`kubectl apply -f broker.yaml`) for
-  config changes, rather than SSH + edit + a systemd/compose restart.
+- You want config changes made in `/admin` (or a backed-up patch of the `broker-config` ConfigMap)
+  rather than SSH + edit + a systemd/compose restart. The broker writes its own edits back to that
+  ConfigMap, so **don't `kubectl apply` a config file over it**: that replaces everything `/admin`
+  changed (users, password hashes, 2FA secrets, rooms, locations). If you want git to own the
+  config instead, set `config_persistence.mode: none`; `/admin` edits are then ephemeral and the
+  UI says so.
 
 None of these is permanent. `telemetry.backend` and `config_persistence.mode` are just config keys
 — moving from Tier 1 to Tier 3 later means copying `config.yaml` into a ConfigMap and switching
@@ -121,11 +125,12 @@ probe from the host as above, or point an external monitor at the published port
 **Prerequisites:** k3s, Traefik (or another Ingress controller), cert-manager, kube-prometheus-stack
 (for Grafana), optionally MetalLB and Longhorn depending on your cluster's networking/storage setup.
 
-**Install runbook:** unchanged — see `backend/deploy/k3s/broker.yaml.example`,
-`secret.yaml.example`, `alerts.yaml`, and `docs/BUILD-GUIDE.md` Steps 3–4.
+**Install runbook:** see `backend/deploy/k3s/broker.yaml.example`, `config.seed.yaml.example` (the
+initial broker config, created once with `kubectl create configmap`; it is deliberately not in
+`broker.yaml.example`), `secret.yaml.example`, `alerts.yaml`, and `docs/BUILD-GUIDE.md` Steps 3–4.
 
 **Resolved config_persistence:** `auto` → `configmap` (today's behavior, byte-for-byte). The
-`broker.yaml.example` ConfigMap now spells this out explicitly as
+`config.seed.yaml.example` now spells this out explicitly as
 `config_persistence: {mode: configmap, ...}` rather than relying on auto-detection silently doing
 the right thing — same values, just visible in `kubectl get configmap broker-config -o yaml`
 instead of requiring a reader to know the auto-detection rule.

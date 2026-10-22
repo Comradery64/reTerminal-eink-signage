@@ -124,8 +124,10 @@ WIF configured. Next (docs/DEPLOY.md Parts D2–D4 / F):
   1) kubectl create namespace $K8S_NAMESPACE   # if not present
   2) kubectl -n $K8S_NAMESPACE create secret generic broker-secrets \\
        --from-literal=alert-webhook-url='https://hooks.slack.com/...'   # optional Slack
-  3) Set image: in broker.yaml (Part C), paste provisioning/rooms.snippet.yaml into the ConfigMap.
-  4) kubectl apply -f $(basename "$BROKER_YAML") -f alerts.yaml ; then watch the broker logs (Part F).
+  3) Set image: in broker.yaml (Part C), paste provisioning/rooms.snippet.yaml into config.seed.yaml.
+  4) FIRST INSTALL ONLY: kubectl -n $K8S_NAMESPACE create configmap broker-config --from-file=config.yaml=config.seed.yaml
+     (the live config is not in broker.yaml; applying a copy from git would wipe users, 2FA and rooms).
+  5) kubectl apply -f $(basename "$BROKER_YAML") -f alerts.yaml ; then watch the broker logs (Part F).
 EOF
 else
   echo "Nothing changed (dry-run). Re-run with --apply to create the pool/provider/binding and patch broker.yaml."
