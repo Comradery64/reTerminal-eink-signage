@@ -43,6 +43,9 @@ func TestShippedConfigsLoadWithOptionalEnvUnset(t *testing.T) {
 		{"config.example.yaml", filepath.Join("..", "..", "config.example.yaml")},
 		{"config.demo.yaml", filepath.Join("..", "..", "config.demo.yaml")},
 		{"config.tier1.example.yaml", filepath.Join("..", "..", "config.tier1.example.yaml")},
+		// The k3s initial config. It is the highest-stakes of these: when wrong it takes the fleet
+		// down rather than annoying a reader.
+		{"config.seed.yaml.example", filepath.Join("..", "..", "deploy", "k3s", "config.seed.yaml.example")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assertNoDanglingEnvRef(t, tc.path)
@@ -65,17 +68,52 @@ func TestShippedConfigsLoadWithOptionalEnvUnset(t *testing.T) {
 		}
 	})
 
-	// The k3s ConfigMap is the highest-stakes of the four: it is the one that, when wrong, takes
-	// the fleet down rather than annoying a reader. It is embedded inside a multi-document
-	// manifest, so it has to be extracted before it can be loaded.
-	t.Run("broker.yaml.example ConfigMap", func(t *testing.T) {
-		embedded := extractConfigMapYAML(t, filepath.Join("..", "..", "deploy", "k3s", "broker.yaml.example"))
-		tmp := filepath.Join(t.TempDir(), "config.yaml")
-		if err := os.WriteFile(tmp, []byte(embedded), 0o600); err != nil {
+	// The live config ConfigMap must never be in the manifest an operator applies. The broker edits
+	// it itself from /admin (users, 2FA secrets, rooms, ...), so applying a copy from git replaces
+	// all of that — it did, and accounts lost their 2FA. The initial config is config.seed.yaml.example,
+	// created once with `kubectl create`. A guard that cannot fail guards nothing: the second
+	// subtest proves the detector does trip on a manifest that carries it.
+	t.Run("broker.yaml.example does not carry the live config ConfigMap", func(t *testing.T) {
+		if manifestHasBrokerConfigMap(t, filepath.Join("..", "..", "deploy", "k3s", "broker.yaml.example")) {
+			t.Fatal("broker.yaml.example contains the broker-config ConfigMap: `kubectl apply` of it would overwrite live users, 2FA secrets and rooms. Keep the config in config.seed.yaml.example (first install only).")
+		}
+	})
+	t.Run("guard trips on a manifest that carries it", func(t *testing.T) {
+		bad := filepath.Join(t.TempDir(), "manifest.yaml")
+		yml := "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: broker-config\ndata:\n  config.yaml: |\n    listen: \":8080\"\n"
+		if err := os.WriteFile(bad, []byte(yml), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		assertNoDanglingEnvRef(t, tmp)
+		if !manifestHasBrokerConfigMap(t, bad) {
+			t.Fatal("manifestHasBrokerConfigMap did not flag a manifest containing broker-config")
+		}
 	})
+}
+
+// manifestHasBrokerConfigMap reports whether a multi-document k8s manifest defines the ConfigMap
+// named broker-config.
+func manifestHasBrokerConfigMap(t *testing.T, manifest string) bool {
+	t.Helper()
+	f, err := os.Open(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	dec := yaml.NewDecoder(f)
+	for {
+		var doc struct {
+			Kind     string                `yaml:"kind"`
+			Metadata struct{ Name string } `yaml:"metadata"`
+		}
+		if err := dec.Decode(&doc); errors.Is(err, io.EOF) {
+			return false
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		if doc.Kind == "ConfigMap" && doc.Metadata.Name == "broker-config" {
+			return true
+		}
+	}
 }
 
 // assertNoDanglingEnvRef fails only on the env-reference error. Every shipped example still carries
@@ -99,39 +137,4 @@ func danglingEnvRefErr(path string) error {
 		return err
 	}
 	return nil // nil, or a placeholder-validation error, which is the template working as intended
-}
-
-// extractConfigMapYAML pulls data["config.yaml"] out of the broker-config ConfigMap in a
-// multi-document k8s manifest.
-func extractConfigMapYAML(t *testing.T, manifest string) string {
-	t.Helper()
-	f, err := os.Open(manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-
-	dec := yaml.NewDecoder(f)
-	for {
-		var doc struct {
-			Kind     string                `yaml:"kind"`
-			Metadata struct{ Name string } `yaml:"metadata"`
-			Data     map[string]string     `yaml:"data"`
-		}
-		err := dec.Decode(&doc)
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			continue // manifests may hold documents that don't fit this shape; skip them
-		}
-		if doc.Kind == "ConfigMap" && doc.Data != nil {
-			if cfg, ok := doc.Data["config.yaml"]; ok {
-				return cfg
-			}
-		}
-	}
-	t.Fatalf("no ConfigMap with data[\"config.yaml\"] found in %s — if the manifest was "+
-		"restructured, update this test rather than deleting it", manifest)
-	return ""
 }

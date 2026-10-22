@@ -192,13 +192,18 @@ Put `POOL_ID=displays-pool`, `PROVIDER_ID=k3s`, the project number, and the SA e
 ```bash
 # per-device bearer tokens (broker stores only the SHA-256):
 ./tools/provision_all.sh tools/rooms.csv      # -> provisioning/{rooms.snippet.yaml, device-tokens.txt}
-# paste rooms.snippet.yaml into the broker ConfigMap; build + push the image:
+# paste rooms.snippet.yaml into your copy of backend/deploy/k3s/config.seed.yaml.example
+# (saved as config.seed.yaml); build + push the image:
 docker build -t <registry>/meeting-displays/broker:1.0.0 backend && docker push <registry>/...
 # internal-CA TLS: export your root CA to firmware/main/certs/broker_ca.pem; put the broker leaf
 # cert+key in the broker-tls secret; the Ingress host must match the cert CN/SAN.
 kubectl create namespace meeting-displays
 kubectl -n meeting-displays create secret generic broker-secrets \
   --from-literal=alert-webhook-url='https://hooks.slack.com/...'   # no SA key — keyless
+# FIRST INSTALL ONLY: the broker edits its own config ConfigMap from /admin (users, 2FA, rooms), so
+# it is NOT in broker.yaml, and applying a copy from git would overwrite all of that. `create`
+# refuses to overwrite an existing one.
+kubectl -n meeting-displays create configmap broker-config --from-file=config.yaml=backend/deploy/k3s/config.seed.yaml
 kubectl apply -f backend/deploy/k3s/broker.yaml -f backend/deploy/k3s/alerts.yaml
 # verify: broker logs show renders (no freebusy errors); GET /api/v1/display/<device> returns 200.
 ```
