@@ -58,7 +58,7 @@ const tokenRefreshMargin = 5 * time.Minute
 var larkTokenInvalid = map[int]bool{99991661: true, 99991663: true, 99991668: true}
 
 func (l *LarkApp) Send(ctx context.Context, m Message) error {
-	text := m.Title + "\n" + m.Text
+	text := m.Body()
 	var email, chat, mode, fallback string
 	if l.Routes != nil {
 		email, chat = l.Routes.LarkRoute(m.Location)
@@ -104,12 +104,12 @@ func (l *LarkApp) Send(ctx context.Context, m Message) error {
 
 // SendDM messages one person directly — the /admin "Send test DM" action.
 func (l *LarkApp) SendDM(ctx context.Context, email string, m Message) error {
-	return l.send(ctx, "email", email, m.Title+"\n"+m.Text)
+	return l.send(ctx, "email", email, m.Body())
 }
 
 // SendChat posts to one group — the /admin "Send test to group" action.
 func (l *LarkApp) SendChat(ctx context.Context, chatID string, m Message) error {
-	return l.send(ctx, "chat_id", chatID, m.Title+"\n"+m.Text)
+	return l.send(ctx, "chat_id", chatID, m.Body())
 }
 
 func (l *LarkApp) send(ctx context.Context, idType, id, text string) error {

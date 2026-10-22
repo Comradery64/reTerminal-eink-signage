@@ -60,6 +60,11 @@ func (a AlertConfig) EffectiveChannels() []string {
 }
 
 func (c *Config) validateNotify() error {
+	switch c.Alerts.MessageStyle {
+	case "", "plain", "minimal", "detailed":
+	default:
+		return fmt.Errorf("alerts.message_style %q must be plain, minimal or detailed", c.Alerts.MessageStyle)
+	}
 	a := c.Alerts
 	seen := map[string]bool{}
 	for _, ch := range a.Channels {

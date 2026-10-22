@@ -311,3 +311,16 @@ func TestLarkAppSendChat(t *testing.T) {
 		t.Fatalf("sent = %+v", f.sent)
 	}
 }
+
+// A message with no body is sent as just its title, with no trailing blank line.
+func TestLarkAppSendsTitleOnlyMessageWithoutTrailingNewline(t *testing.T) {
+	f := &fakeLark{}
+	app, done := newTestApp(t, f, routes{m: map[string][2]string{"loc": {"a@example.com", ""}}})
+	defer done()
+	if err := app.Send(context.Background(), Message{Title: "✅ Aspen: back online", Location: "loc"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.sent) != 1 || f.sent[0].Text != "✅ Aspen: back online" {
+		t.Fatalf("sent = %+v", f.sent)
+	}
+}

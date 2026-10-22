@@ -88,6 +88,11 @@ func New(cfg *config.Live, c *cache.Store, tlm *telemetry.Store, alerts *notify.
 		forgotPasswordLimiter: newRateLimiter(),
 		log:                   log,
 	}
+	// Alert thresholds and message wording are read live, so an /admin edit applies to the next alert.
+	alerts.SetSettings(func() notify.Settings {
+		a := cfg.Load().Alerts
+		return notify.Settings{LowPct: a.LowBatteryPct, ClearPct: a.ClearPct, Renotify: a.MinRenotify, Style: a.MessageStyle}
+	})
 	if path := cfg.Load().Auth.SessionStorePath; path != "" {
 		// A store that can't be loaded or saved is logged, never fatal: the worst case is that
 		// people sign in again, which is how it behaved before sessions were persisted.

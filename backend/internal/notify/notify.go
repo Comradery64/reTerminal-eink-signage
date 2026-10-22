@@ -19,6 +19,14 @@ import (
 )
 
 // Message is a rendered alert ready to dispatch.
+// Body is the message as one text: the title, then the body on its own line when there is one.
+func (m Message) Body() string {
+	if m.Text == "" {
+		return m.Title
+	}
+	return m.Title + "\n" + m.Text
+}
+
 type Message struct {
 	Title    string
 	Text     string
@@ -49,7 +57,11 @@ func NewSlackWebhook(url string) *SlackWebhook {
 func (s *SlackWebhook) Name() string { return "slack-webhook" }
 
 func (s *SlackWebhook) Send(ctx context.Context, m Message) error {
-	body, _ := json.Marshal(map[string]string{"text": "*" + m.Title + "*\n" + m.Text})
+	text := "*" + m.Title + "*"
+	if m.Text != "" {
+		text += "\n" + m.Text
+	}
+	body, _ := json.Marshal(map[string]string{"text": text})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.URL, bytes.NewReader(body))
 	if err != nil {
 		return redactURL(err)
@@ -116,16 +128,55 @@ type devState struct {
 	lastNotified time.Time
 }
 
+// Settings are the alert manager's tunables. They are read live (see SetSettings), so a change made
+// in /admin applies to the next alert without a restart.
+type Settings struct {
+	LowPct   int           // alert at/below this battery percent
+	ClearPct int           // re-arm at/above this
+	Renotify time.Duration // repeat an alert for a still-bad display no sooner than this
+	Style    string        // message wording: "plain" (default), "minimal" or "detailed"
+}
+
 type Manager struct {
 	notifier Notifier
 	lowPct   int
 	clearPct int
 	renotify time.Duration
+	settings func() Settings // nil = the values the manager was built with
 	log      *slog.Logger
 	mu       sync.Mutex
 	state    map[string]*devState
 	stale    map[string]*devState // per-device offline latch, independent of the battery latch
 	locate   func(deviceID string) string
+}
+
+// SetSettings makes the manager read its thresholds and message style from f on every evaluation,
+// so editing them in /admin takes effect immediately instead of at the next restart.
+func (m *Manager) SetSettings(f func() Settings) {
+	m.mu.Lock()
+	m.settings = f
+	m.mu.Unlock()
+}
+
+// current returns the settings in force. Caller holds m.mu.
+func (m *Manager) current() Settings {
+	cur := Settings{LowPct: m.lowPct, ClearPct: m.clearPct, Renotify: m.renotify}
+	if m.settings == nil {
+		return cur
+	}
+	got := m.settings()
+	// A zero threshold means "not set": keep the value the manager was built with rather than
+	// treating 0% / 0s as an instruction.
+	if got.LowPct == 0 {
+		got.LowPct = cur.LowPct
+	}
+	if got.ClearPct == 0 {
+		got.ClearPct = cur.ClearPct
+	}
+	if got.Renotify == 0 {
+		got.Renotify = cur.Renotify
+	}
+	return got
 }
 
 // SetLocator tells the manager how to find a device's location, so every alert it sends is routed
@@ -193,15 +244,16 @@ func (m *Manager) EvaluateBattery(deviceID, room string, pct, mv int, now time.T
 		m.state[deviceID] = st
 	}
 
+	cfg := m.current()
 	var fire bool
 	switch {
-	case pct <= m.lowPct:
-		if !st.alerting || now.Sub(st.lastNotified) >= m.renotify {
+	case pct <= cfg.LowPct:
+		if !st.alerting || now.Sub(st.lastNotified) >= cfg.Renotify {
 			fire = true
 			st.alerting = true
 			st.lastNotified = now
 		}
-	case pct >= m.clearPct:
+	case pct >= cfg.ClearPct:
 		st.alerting = false // recovered (charged) → re-arm for the next downward crossing
 	}
 	m.mu.Unlock()
@@ -213,12 +265,8 @@ func (m *Manager) EvaluateBattery(deviceID, room string, pct, mv int, now time.T
 	if name == "" {
 		name = deviceID
 	}
-	msg := Message{
-		Title:    fmt.Sprintf("🔋 Low battery: %s (%d%%)", name, pct),
-		Text:     fmt.Sprintf("Display %q (device %s) is at %d%% (%d mV). Please recharge/replace soon.\nNote: LiPo %%→V is approximate near this range; %d mV is the raw reading.", name, deviceID, pct, mv, mv),
-		DeviceID: deviceID,
-		Room:     room,
-	}
+	title, text := batteryText(cfg.Style, name, deviceID, pct, mv)
+	msg := Message{Title: title, Text: text, DeviceID: deviceID, Room: room}
 	m.log.Warn("low battery alert", "device", deviceID, "room", room, "pct", pct, "mv", mv)
 	m.dispatch(msg)
 	return true
@@ -245,9 +293,10 @@ func (m *Manager) EvaluateStale(deviceID, room string, stale bool, silentFor tim
 		st = &devState{}
 		m.stale[deviceID] = st
 	}
+	cfg := m.current()
 	ev := StaleNone
 	switch {
-	case stale && (!st.alerting || now.Sub(st.lastNotified) >= m.renotify):
+	case stale && (!st.alerting || now.Sub(st.lastNotified) >= cfg.Renotify):
 		ev = StaleOffline
 		st.alerting = true
 		st.lastNotified = now
@@ -264,18 +313,12 @@ func (m *Manager) EvaluateStale(deviceID, room string, stale bool, silentFor tim
 	switch ev {
 	case StaleOffline:
 		m.log.Warn("display offline alert", "device", deviceID, "room", room, "silent_for", silentFor.Round(time.Minute))
-		m.dispatch(Message{
-			Title:    fmt.Sprintf("📵 Display offline: %s", name),
-			Text:     fmt.Sprintf("Display %q (device %s) hasn't checked in for %s — two of its scheduled check-ins. Check its battery and Wi-Fi.", name, deviceID, silentFor.Round(time.Minute)),
-			DeviceID: deviceID, Room: room,
-		})
+		title, text := offlineText(cfg.Style, name, deviceID, silentFor)
+		m.dispatch(Message{Title: title, Text: text, DeviceID: deviceID, Room: room})
 	case StaleRecovered:
 		m.log.Info("display recovered", "device", deviceID, "room", room)
-		m.dispatch(Message{
-			Title:    fmt.Sprintf("✅ Display back online: %s", name),
-			Text:     fmt.Sprintf("Display %q (device %s) is checking in again.", name, deviceID),
-			DeviceID: deviceID, Room: room,
-		})
+		title, text := recoveredText(cfg.Style, name, deviceID)
+		m.dispatch(Message{Title: title, Text: text, DeviceID: deviceID, Room: room})
 	}
 	return ev
 }
@@ -295,4 +338,77 @@ func (m *Manager) dispatch(msg Message) {
 			m.log.Error("alert dispatch failed", "device", msg.DeviceID, "err", err)
 		}
 	}()
+}
+
+// Message styles. "plain" is the default: what is wrong and what to do about it, in words anyone can
+// read. "minimal" is one short line. "detailed" adds the device ID and the raw readings.
+const (
+	StylePlain    = "plain"
+	StyleMinimal  = "minimal"
+	StyleDetailed = "detailed"
+)
+
+// NormalizeStyle maps anything unset or unknown to the default, so a typo can never silence alerts.
+func NormalizeStyle(s string) string {
+	switch s {
+	case StyleMinimal, StyleDetailed:
+		return s
+	}
+	return StylePlain
+}
+
+func batteryText(style, name, deviceID string, pct, mv int) (title, text string) {
+	switch NormalizeStyle(style) {
+	case StyleMinimal:
+		return fmt.Sprintf("🔋 %s: battery %d%%", name, pct), ""
+	case StyleDetailed:
+		return fmt.Sprintf("🔋 Low battery: %s (%d%%)", name, pct),
+			fmt.Sprintf("Display %q (device %s) is at %d%% (%d mV). Please recharge/replace soon.\nNote: LiPo %%→V is approximate near this range; %d mV is the raw reading.", name, deviceID, pct, mv, mv)
+	}
+	return fmt.Sprintf("🔋 Low battery: %s (%d%%)", name, pct), "Please recharge or replace it soon."
+}
+
+func offlineText(style, name, deviceID string, silentFor time.Duration) (title, text string) {
+	switch NormalizeStyle(style) {
+	case StyleMinimal:
+		return fmt.Sprintf("📵 %s: offline", name), ""
+	case StyleDetailed:
+		return fmt.Sprintf("📵 Display offline: %s", name),
+			fmt.Sprintf("Display %q (device %s) hasn't checked in for %s — two of its scheduled check-ins. Check its battery and Wi-Fi.", name, deviceID, silentFor.Round(time.Minute))
+	}
+	return fmt.Sprintf("📵 Display offline: %s", name),
+		fmt.Sprintf("It hasn't checked in for %s. Check its battery and Wi-Fi.", plainDuration(silentFor))
+}
+
+func recoveredText(style, name, deviceID string) (title, text string) {
+	switch NormalizeStyle(style) {
+	case StyleMinimal:
+		return fmt.Sprintf("✅ %s: back online", name), ""
+	case StyleDetailed:
+		return fmt.Sprintf("✅ Display back online: %s", name),
+			fmt.Sprintf("Display %q (device %s) is checking in again.", name, deviceID)
+	}
+	return fmt.Sprintf("✅ Display back online: %s", name), ""
+}
+
+// plainDuration is a duration a person would say: "40 minutes", "about 3 hours", "about 2 days".
+func plainDuration(d time.Duration) string {
+	switch {
+	case d < time.Hour:
+		n := int(d.Round(time.Minute) / time.Minute)
+		if n < 1 {
+			n = 1
+		}
+		if n == 1 {
+			return "1 minute"
+		}
+		return fmt.Sprintf("%d minutes", n)
+	case d < 48*time.Hour:
+		n := int(d.Round(time.Hour) / time.Hour)
+		if n == 1 {
+			return "about 1 hour"
+		}
+		return fmt.Sprintf("about %d hours", n)
+	}
+	return fmt.Sprintf("about %d days", int(d.Round(24*time.Hour)/(24*time.Hour)))
 }

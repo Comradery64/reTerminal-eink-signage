@@ -263,6 +263,7 @@ func (s *Server) handleAdminSaveAlerts(w http.ResponseWriter, r *http.Request) {
 	alerts.ClearPct = formInt(r, "clear_pct")
 	alerts.MinRenotify = formDuration(r, "min_renotify")
 	alerts.StaleAfter = formDuration(r, "stale_after")
+	alerts.MessageStyle = r.PostForm.Get("message_style")
 	newCfg, err := cfg.WithAlerts(alerts)
 	if err != nil {
 		s.log.Error("admin alerts save rejected", "err", err)
@@ -1008,6 +1009,13 @@ another admin's code, each account enrolls its own authenticator app.</p>
 <label for="a-clear">Clear threshold (%)</label><input id="a-clear" type="number" name="clear_pct" value="{{.View.Alerts.ClearPct}}">
 <label for="a-renotify">Minimum time between repeat alerts</label><input id="a-renotify" type="text" name="min_renotify" value="{{.View.Alerts.MinRenotify}}" placeholder="e.g. 24h">
 <label for="a-stale">Mark stale after</label><input id="a-stale" type="text" name="stale_after" value="{{.View.Alerts.StaleAfter}}" placeholder="e.g. 1h">
+<label for="a-style">Message style</label>
+<select id="a-style" name="message_style">
+<option value="plain" {{if or (eq .View.Alerts.MessageStyle "") (eq .View.Alerts.MessageStyle "plain")}}selected{{end}}>Plain — what's wrong and what to do</option>
+<option value="minimal" {{if eq .View.Alerts.MessageStyle "minimal"}}selected{{end}}>Minimal — one short line</option>
+<option value="detailed" {{if eq .View.Alerts.MessageStyle "detailed"}}selected{{end}}>Detailed — adds device ID and technical readings</option>
+</select>
+<p class="hint">Example, low battery: <em>Plain</em> "🔋 Low battery: Aspen (45%) — Please recharge or replace it soon." · <em>Minimal</em> "🔋 Aspen: battery 45%" · <em>Detailed</em> adds the device ID and millivolts.</p>
 <button type="submit">Save alerts</button>
 </form>
 <p class="hint">Where alerts are sent is set under <a href="#notifications">Notifications</a>.</p>

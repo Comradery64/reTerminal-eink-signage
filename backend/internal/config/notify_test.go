@@ -75,6 +75,7 @@ func TestValidateNotifyFailsClosed(t *testing.T) {
 			c.Locations = []Location{{ID: "a", Name: "A", LarkChatID: "oc_a", Delivery: "both"}}
 			c.DefaultLocation = "a"
 		},
+		"unknown alert message style": func(c *Config) { c.Alerts.MessageStyle = "shouting" },
 		"lark fallback not a chat id": func(c *Config) {
 			c.Alerts.Channels = []string{"lark"}
 			larkOK(c)
