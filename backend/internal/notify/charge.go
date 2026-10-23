@@ -11,19 +11,20 @@ import (
 // unit showing 80% under charge rested at 65% minutes after it was unplugged), so the "charged"
 // call is made from the shape of the climb, not from the percent.
 const (
-	chargeRiseMV     = 15               // a rise of at least this between reports means it is charging
-	chargeFlatMV     = 10               // a rise below this, while charging, counts as levelling off
-	chargeUnplugMV   = 40               // a drop of at least this ends the charge (unplugged)
-	chargeStallsDone = 2                // consecutive levelling-off reports that mean "done"
-	chargeFloorMV    = 4000             // never call it done below this; an early pause is not full
-	chargeFullMV     = 4150             // at/above this it is done whatever the trend
-	chargeMaxGap     = 45 * time.Minute // a longer silence breaks the trend; start again
+	chargeRiseMV     = 15                                   // a rise of at least this between reports means it is charging
+	chargeFlatMV     = 10                                   // a rise below this, while charging, counts as levelling off
+	chargeUnplugMV   = 40                                   // a drop of at least this ends the charge (unplugged)
+	chargeStallsDone = 2                                    // consecutive levelling-off reports that mean "done"
+	chargeFloorMV    = 4000                                 // never call it done below this; an early pause is not full
+	chargeDonePct    = 86                                   // done at this displayed percent while climbing: the standard the team chose
+	chargeFullMV     = 3300 + chargeDonePct*(4150-3300)/100 // on the firmware's own 3300..4150 mV line: 4031 mV
+	chargeMaxGap     = 45 * time.Minute                     // a longer silence breaks the trend; start again
 )
 
 // EvaluateCharging is called on every telemetry report. It sends one "charged, you can unplug it"
-// message per charge: when the voltage has stopped climbing near the top, or reaches the full-cell
-// voltage. A new charge starts after an unplug or a long silence. State is in memory, so a broker
-// restart in the middle of a charge forgets it and the message for that charge may not be sent.
+// message per charge: when the voltage has stopped climbing near the top, or reaches 86% on the
+// displayed scale while still climbing. A new charge starts after an unplug or a long silence.
+// State is in memory, so a broker restart in the middle of a charge forgets it and the message for that charge may not be sent.
 // Returns whether a message was fired.
 func (m *Manager) EvaluateCharging(deviceID, room string, mv int, now time.Time) bool {
 	if mv <= 0 {
