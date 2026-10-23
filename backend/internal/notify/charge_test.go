@@ -6,7 +6,8 @@ import (
 	"time"
 )
 
-// Replays rt-quant's real charge (10-minute reports, 2026-10-23) and asserts exactly one message,
+// A charge at 10-minute reports: the first values are rt-quant's real ones (2026-10-23, 3858 to
+// 4030 mV); the levelling-off tail after that is illustrative, not recorded. Exactly one message,
 // at the point the climb levels off.
 func TestChargedFiresOnceWhenTheClimbLevelsOff(t *testing.T) {
 	m := newTestManager()
