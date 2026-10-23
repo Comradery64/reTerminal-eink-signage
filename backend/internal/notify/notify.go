@@ -131,7 +131,6 @@ type devState struct {
 	lastMV      int
 	lastMVAt    time.Time
 	charging    bool
-	stalls      int  // consecutive reports where the voltage has stopped climbing
 	chargedSent bool // the "unplug it" message has gone out for this charge
 }
 
