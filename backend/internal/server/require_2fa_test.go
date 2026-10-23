@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -250,4 +251,73 @@ func serve(s *Server, req *http.Request) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 	return rec
+}
+
+// A forced password change must not loop with the 2FA pages: the change-password page is served,
+// and submitting it moves on to 2FA setup (or verification for an enrolled account). Walked with a
+// real cookie jar through every door, because a one-request check cannot see a redirect loop.
+func TestForcedPasswordChangeThen2FADoesNotLoop(t *testing.T) {
+	for _, enrolled := range []bool{false, true} {
+		for _, c := range []struct {
+			ui   roleUI
+			next string
+		}{{managerUI, "/manager"}, {viewerUI, "/dashboard"}} {
+			s := scopeServer(t)
+			require2FA(s, true)
+			cfg := *s.cfg.Load()
+			cfg.Users = append([]config.User(nil), cfg.Users...)
+			for i := range cfg.Users {
+				if cfg.Users[i].Username == testManagerUsername {
+					cfg.Users[i].MustChangePassword = true
+					if enrolled {
+						cfg.Users[i].TOTPSecret = enrolledSecret
+					}
+				}
+			}
+			s.cfg.Store(&cfg)
+			s.refreshDerived(&cfg)
+			srv := httptest.NewTLSServer(s.Handler())
+			jar, _ := cookiejar.New(nil)
+			cl := srv.Client()
+			cl.Jar = jar
+			cl.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+			resp, err := cl.PostForm(srv.URL+c.ui.loginPath, url.Values{"username": {testManagerUsername}, "password": {testManagerPassword}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := resp.Header.Get("Location"); got != c.ui.changePasswordPath {
+				t.Fatalf("enrolled=%v %s: login sent to %q, want %s", enrolled, c.ui.label, got, c.ui.changePasswordPath)
+			}
+			resp, err = cl.Get(srv.URL + c.ui.changePasswordPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("enrolled=%v %s: the change-password page must be served, got %d -> %q", enrolled, c.ui.label, resp.StatusCode, resp.Header.Get("Location"))
+			}
+			resp, err = cl.PostForm(srv.URL+c.ui.changePasswordPath, url.Values{"password": {"new-pass-1"}, "password_confirm": {"new-pass-1"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := viewerUI.homePath
+			if enrolled {
+				want = c.ui.totpVerifyPath
+			}
+			if got := resp.Header.Get("Location"); got != want {
+				t.Fatalf("enrolled=%v %s: after changing the password got %q, want %s", enrolled, c.ui.label, got, want)
+			}
+			// Follow what is left; it must settle on a page within a few hops.
+			for hop := 0; resp.StatusCode == http.StatusSeeOther; hop++ {
+				if hop > 4 {
+					t.Fatalf("enrolled=%v %s: redirect loop, still at %q", enrolled, c.ui.label, resp.Header.Get("Location"))
+				}
+				resp, err = cl.Get(srv.URL + resp.Header.Get("Location"))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			srv.Close()
+		}
+	}
 }

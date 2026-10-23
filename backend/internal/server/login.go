@@ -95,8 +95,15 @@ func (s *Server) requireRole(ui roleUI, next http.HandlerFunc) http.HandlerFunc 
 			http.Redirect(w, r, ui.loginPath, http.StatusSeeOther)
 			return
 		}
-		if sess.MustChangePassword && r.URL.Path != ui.changePasswordPath {
-			http.Redirect(w, r, ui.changePasswordPath, http.StatusSeeOther)
+		if sess.MustChangePassword {
+			if r.URL.Path != ui.changePasswordPath {
+				http.Redirect(w, r, ui.changePasswordPath, http.StatusSeeOther)
+				return
+			}
+			// This is the one page the session may reach. Serving it here, before the 2FA checks
+			// below, is what stops a redirect loop: those checks would send it to the 2FA setup or
+			// verify page, which would send it straight back here.
+			next(w, r)
 			return
 		}
 		if sess.Pending2FA && r.URL.Path != ui.totpVerifyPath {
