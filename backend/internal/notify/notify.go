@@ -126,6 +126,13 @@ func (m Multi) Send(ctx context.Context, msg Message) error {
 type devState struct {
 	alerting     bool // currently below the low threshold (latched)
 	lastNotified time.Time
+
+	// Charge tracking (see EvaluateCharging): the last report, and where this charge is up to.
+	lastMV      int
+	lastMVAt    time.Time
+	charging    bool
+	stalls      int  // consecutive reports where the voltage has stopped climbing
+	chargedSent bool // the "unplug it" message has gone out for this charge
 }
 
 // Settings are the alert manager's tunables. They are read live (see SetSettings), so a change made

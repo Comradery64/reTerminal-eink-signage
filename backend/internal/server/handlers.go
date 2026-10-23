@@ -108,6 +108,7 @@ func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 	s.tlm.Ingest(device, rep, now)
 	// Hysteresis + dedupe + dispatch all live in the alert manager; this is non-blocking.
 	s.alerts.EvaluateBattery(device, s.roomName(device), rep.BatteryPct, rep.BatteryMV, now)
+	s.alerts.EvaluateCharging(device, s.roomName(device), rep.BatteryMV, now)
 	w.WriteHeader(http.StatusNoContent)
 }
 
