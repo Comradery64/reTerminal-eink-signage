@@ -7,26 +7,26 @@ import (
 	"time"
 )
 
-// 80% on the firmware's own 3300..4150 mV line, the number the dashboard shows, is 3980 mV.
-func TestChargedLineIs80PercentOfTheDisplayedScale(t *testing.T) {
-	if chargeDoneMV != 3980 {
-		t.Fatalf("80%% of 3300..4150 mV is 3980, got %d", chargeDoneMV)
+// 94% on the firmware's own 3300..4150 mV line, the number the dashboard shows, is 4099 mV.
+func TestChargedLineIs94PercentOfTheDisplayedScale(t *testing.T) {
+	if chargeDoneMV != 4099 {
+		t.Fatalf("94%% of 3300..4150 mV is 4099, got %d", chargeDoneMV)
 	}
 }
 
-// rt-quant's real climb (2026-10-23, 10-minute reports): it reached 85% under charge. The message
-// goes out once, at the first report at or above 80%.
-func TestChargedFiresOnceAtTheFirstReportAt80Percent(t *testing.T) {
+// rt-quant's real second charge (2026-10-23, 10-minute reports): 4156 mV under charge rested at
+// 4042 mV (87%). The message goes out once, at the first report at or above 94%.
+func TestChargedFiresOnceAtTheFirstReportAt94Percent(t *testing.T) {
 	m := newTestManager()
 	t0 := time.Date(2026, 10, 23, 21, 0, 0, 0, time.UTC)
 	fired := []int{}
-	for i, mv := range []int{3694, 3842, 3892, 3914, 3944, 3964, 3988, 4010, 4030} {
+	for i, mv := range []int{3932, 4072, 4108, 4128, 4146, 4156, 4170} {
 		if m.EvaluateCharging("rt-q", "Quant", mv, t0.Add(time.Duration(i)*10*time.Minute)) {
 			fired = append(fired, mv)
 		}
 	}
-	if len(fired) != 1 || fired[0] != 3988 {
-		t.Fatalf("want one message at 3988 mV (80%%), got %v", fired)
+	if len(fired) != 1 || fired[0] != 4108 {
+		t.Fatalf("want one message at 4108 mV (95%%), got %v", fired)
 	}
 }
 
@@ -42,26 +42,26 @@ func TestChargedNotForARestingBatteryEvenWhenFull(t *testing.T) {
 	}
 }
 
-func TestChargedNotBelow80AndOnceAgainAfterAnUnplugAndNewCharge(t *testing.T) {
+func TestChargedNotBelow94AndOnceAgainAfterAnUnplugAndNewCharge(t *testing.T) {
 	m := newTestManager()
 	t0 := time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC)
 	at := func(i, mv int) bool {
 		return m.EvaluateCharging("rt-f", "Full", mv, t0.Add(time.Duration(i)*10*time.Minute))
 	}
 	at(0, 3800)
-	if at(1, 3900) || at(2, 3978) {
-		t.Fatal("below 80%: not yet")
+	if at(1, 3990) || at(2, 4098) {
+		t.Fatal("below 94%: not yet")
 	}
-	if !at(3, 3990) {
-		t.Fatal("at 80% while climbing should fire")
+	if !at(3, 4110) {
+		t.Fatal("at 94% while climbing should fire")
 	}
-	if at(4, 4040) {
+	if at(4, 4150) {
 		t.Fatal("must not repeat within the same charge")
 	}
-	at(5, 3940) // unplugged
-	at(6, 3944)
-	at(7, 3970) // charging again
-	if !at(8, 3985) {
+	at(5, 4040) // unplugged
+	at(6, 4044)
+	at(7, 4080) // charging again
+	if !at(8, 4105) {
 		t.Fatal("a new charge should get its own message")
 	}
 }
@@ -69,15 +69,15 @@ func TestChargedNotBelow80AndOnceAgainAfterAnUnplugAndNewCharge(t *testing.T) {
 func TestChargedForgetsAfterALongSilence(t *testing.T) {
 	m := newTestManager()
 	t0 := time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC)
-	m.EvaluateCharging("rt-s", "Silent", 3900, t0)
-	m.EvaluateCharging("rt-s", "Silent", 3940, t0.Add(10*time.Minute))
-	if m.EvaluateCharging("rt-s", "Silent", 3990, t0.Add(10*time.Minute+2*time.Hour)) {
+	m.EvaluateCharging("rt-s", "Silent", 4040, t0)
+	m.EvaluateCharging("rt-s", "Silent", 4070, t0.Add(10*time.Minute))
+	if m.EvaluateCharging("rt-s", "Silent", 4110, t0.Add(10*time.Minute+2*time.Hour)) {
 		t.Fatal("after a long gap the trend restarts; one report is not a charge")
 	}
 }
 
 func TestChargedWording(t *testing.T) {
-	title, text := chargedText("plain", "Quant", "rt-quant", 3988)
+	title, text := chargedText("plain", "Quant", "rt-quant", 4108)
 	if !strings.Contains(title, "Quant") || !strings.Contains(text, "unplug") || strings.Contains(title+text, "rt-quant") {
 		t.Fatalf("plain wording: %q / %q", title, text)
 	}

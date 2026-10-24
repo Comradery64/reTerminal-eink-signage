@@ -9,13 +9,14 @@ import (
 // read, but a charging battery's voltage climbs report after report, which a resting one never
 // does. The firmware's percent is a straight line over voltage, so the "charged" line is a percent
 // on that same scale: the one the dashboard shows. It over-reads while charging (rt-quant read 85%
-// under charge and rested at 76% minutes after it was unplugged), so the percent here is what the
-// display says during the charge, not the resting charge.
+// under charge and rested at 76% minutes after it was unplugged; it read 100% under charge and rested
+// at 87%), so the line is set high enough that the resting charge lands near the 80% the team wants.
+// Calibrated on two charges of one unit; check it against another.
 const (
 	chargeRiseMV   = 15                                   // a rise of at least this between reports means it is charging
 	chargeUnplugMV = 40                                   // a drop of at least this ends the charge (unplugged)
-	chargeDonePct  = 80                                   // tell them at this displayed percent while charging
-	chargeDoneMV   = 3300 + chargeDonePct*(4150-3300)/100 // on the firmware's own 3300..4150 mV line: 3980 mV
+	chargeDonePct  = 94                                   // tell them at this displayed percent while charging
+	chargeDoneMV   = 3300 + chargeDonePct*(4150-3300)/100 // on the firmware's own 3300..4150 mV line: 4099 mV
 	chargeMaxGap   = 45 * time.Minute                     // a longer silence breaks the trend; start again
 )
 
@@ -78,7 +79,7 @@ func chargedText(style, name, deviceID string, mv int) (title, text string) {
 		return fmt.Sprintf("🔌 %s: charged", name), ""
 	case StyleDetailed:
 		return fmt.Sprintf("🔌 Charged: %s", name),
-			fmt.Sprintf("Display %q (device %s) has charged to %d mV (%d%% on the dashboard). You can unplug it.", name, deviceID, mv, chargeDonePct)
+			fmt.Sprintf("Display %q (device %s) has charged to %d mV (%d%% on the dashboard while charging). You can unplug it.", name, deviceID, mv, chargeDonePct)
 	}
-	return fmt.Sprintf("🔌 Charged: %s", name), "It has reached 80%. You can unplug it now."
+	return fmt.Sprintf("🔌 Charged: %s", name), "It has finished charging. You can unplug it now."
 }
