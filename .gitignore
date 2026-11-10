@@ -39,3 +39,7 @@ __pycache__/
 
 # OS cruft
 .DS_Store
+
+# Config backups hold live token hashes and 2FA secrets: never commit them.
+*.backup-*.json
+broker-config.backup-*
