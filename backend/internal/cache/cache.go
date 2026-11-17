@@ -31,9 +31,33 @@ type Entry struct {
 type Store struct {
 	mu sync.RWMutex
 	m  map[string]Entry // keyed by device_id
+	// forceOnce holds devices an operator asked to repaint on their next fetch (see
+	// RequestForceRefresh). Kept apart from m because the poller overwrites m's entries.
+	forceOnce map[string]bool
 }
 
-func New() *Store { return &Store{m: make(map[string]Entry)} }
+func New() *Store {
+	return &Store{m: make(map[string]Entry), forceOnce: make(map[string]bool)}
+}
+
+// RequestForceRefresh marks deviceID to get an unconditional full repaint on its next display
+// fetch, even though its content is unchanged. One-shot; in-memory only (lost on restart).
+func (s *Store) RequestForceRefresh(deviceID string) {
+	s.mu.Lock()
+	s.forceOnce[deviceID] = true
+	s.mu.Unlock()
+}
+
+// TakeForceRefresh reports whether a one-shot repaint was requested for deviceID, and clears it.
+func (s *Store) TakeForceRefresh(deviceID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.forceOnce[deviceID] {
+		return false
+	}
+	delete(s.forceOnce, deviceID)
+	return true
+}
 
 func (s *Store) Get(deviceID string) (Entry, bool) {
 	s.mu.RLock()

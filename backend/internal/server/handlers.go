@@ -57,6 +57,10 @@ func (s *Server) handleDisplay(w http.ResponseWriter, r *http.Request) {
 	if h := cfg.Wake.ForcedRefreshHour; h != nil {
 		forceRefresh = s.cache.ShouldForceFullRefresh(device, now, *h, cfg.Location())
 	}
+	// One-shot repaint an admin requested for this device from /admin.
+	if s.cache.TakeForceRefresh(device) {
+		forceRefresh = true
+	}
 
 	// Conditional GET: identical content → 304, device skips the panel refresh entirely.
 	if match := r.Header.Get("If-None-Match"); !forceRefresh && match != "" && match == entry.ETag {
