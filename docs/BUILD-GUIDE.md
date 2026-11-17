@@ -209,13 +209,37 @@ kubectl apply -f backend/deploy/k3s/broker.yaml -f backend/deploy/k3s/alerts.yam
 ```
 
 ### Step 5 — Firmware: flash ONE unit (eFuses OFF), validate
+Wi-Fi and the device token are **not** build-time settings: they live in the unit's NVS (flash
+offset `0x9000`) and are written by `tools/provision_device.sh`. `idf.py flash` never touches NVS.
+
 ```bash
+# 1. Build (ESP-IDF 5.5). Set CONFIG_MD_BROKER_HOST to your broker hostname (must match the cert).
 cd firmware
 idf.py set-target esp32s3
-idf.py menuconfig           # set Wi-Fi + CONFIG_MD_BROKER_HOST = your internal hostname (matches cert)
-idf.py build flash monitor
-./tools/provision_device.sh <device_id> <room> <wifi_ssid> <wifi_psk>   # writes token to NVS
+idf.py menuconfig
+idf.py build
+cd ..
+
+# 2. Make the NVS image. The script mints a fresh token and prints its token_sha256. Keep the
+#    PSK out of argv/shell history by passing "-" and piping it in (or WIFI_PSK_FILE=<file>):
+<your secret store's read command> | ./tools/provision_device.sh <device_id> <room_email> <wifi_ssid> -
+
+# 3. Register the room BEFORE flashing (so the unit's first fetch isn't a 401): add it in
+#    /admin -> Rooms with the printed token_sha256 (or, on first install, in config.seed.yaml).
+
+# 4. Flash everything in one go (offsets from firmware/partitions.csv; NVS is the 0x9000 part):
+esptool.py --chip esp32s3 -p <PORT> -b 460800 --after hard_reset write_flash \
+  --flash_mode dio --flash_size 32MB --flash_freq 80m \
+  0x0 build/bootloader/bootloader.bin 0x8000 build/partition_table/partition-table.bin \
+  0x9000 <nvs.bin printed in step 2> 0x10000 build/ota_data_initial.bin 0x20000 build/meeting_display.bin
+rm -rf <the dir holding nvs.bin>      # it holds the PSK and the token in plaintext
 ```
+**macOS:** Docker Desktop cannot pass USB through, so you can build in the `espressif/idf` image
+(`docker run --rm -v "$PWD/firmware":/project -v "$HOME/md-build-out":/out -w /project espressif/idf:release-v5.5 idf.py -B /out build`)
+but must flash from the host, using the `esptool.py` inside the IDF Python venv. If `esptool` fails
+IDF's version check, set `IDF_PYTHON_CHECK_CONSTRAINTS=no`. If no `/dev/cu.usb*` port appears: use a
+data-capable USB-C cable, or hold BOOT, tap RESET, release BOOT to enter download mode.
+
 Validate on hardware (all recoverable): image renders; if the first refresh hangs, flip
 `EPD_BUSY_READY_LEVEL` in `epd_spectra6.cpp`; sanity-check battery mV vs a multimeter; confirm a
 button wakes it from deep sleep.
@@ -232,4 +256,10 @@ irreversibly. Enable OTA (dual-slot `partitions.csv` + the broker's `firmware:` 
 - A panel refresh is the battery cost — the 304 path is load-bearing, don't "simplify" it away.
 - Room names may contain emojis; the e-paper font is ASCII — strip them (or ship a TTF).
 - The CA file ships as a placeholder so devices **fail closed** until you install the real CA.
+- An **unprovisioned unit deep-sleeps for 6 h** (21600 s) and looks bricked: flash NVS, then power-cycle.
+- **Provisioning twice mints a second token.** Only the NVS you flashed last and the hash you registered
+  last must match, otherwise the unit gets a 401. Never re-run `provision_all.sh` for rooms already in
+  service: it re-mints every token and the whole fleet gets 401s.
+- `WiFi reason=201` (NO_AP_FOUND) is usually a literal placeholder SSID flashed into NVS. In zsh, single-quote
+  a PSK containing `!`. SSID and PSK cannot contain a comma (NVS CSV limit).
 ```

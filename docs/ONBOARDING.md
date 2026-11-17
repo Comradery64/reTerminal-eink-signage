@@ -26,14 +26,15 @@ the next *person* who isn't comfortable in a shell, has a real path forward.
 ## What still requires a terminal (the actual gaps)
 
 1. **Initial firmware flash of a blank unit** — 100% CLI (`idf.py build flash`, or raw
-   `esptool.py write_flash`). No WebSerial/browser flashing exists. A non-engineer cannot do this
-   today; it requires ESP-IDF installed locally and a USB cable.
+   `esptool.py write_flash`). The `/admin` "Add a device" wizard below adds a browser path, but it has
+   not yet had a real end-to-end bench flash (see its checklist), so treat the CLI path in
+   BUILD-GUIDE Step 5 as the proven one. It needs ESP-IDF (or the `espressif/idf` image) and a USB cable.
 2. **Per-device provisioning (Wi-Fi SSID/PSK + bearer token → NVS)** — `tools/provision_device.sh`
    + `esptool.py write_flash 0x9000`, entirely CLI. The token it generates then has to be
    manually copy-pasted (or scripted, as we did this session) into `/admin`'s room-save form —
    two disconnected manual steps that are easy to get out of sync.
 3. **Broker TLS root CA** (`firmware/main/certs/broker_ca.pem`) — must be manually exported
-   (`kubectl exec step-ca-0 -- cat .../root_ca.crt`) and dropped in before the firmware even
+   (`kubectl exec <your-ca-pod> -- cat .../root_ca.crt`) and dropped in before the firmware even
    builds. No in-app guidance, no validation that it matches the live `broker-tls` secret until
    you try to connect.
 4. **GCP Workload Identity Federation + Calendar sharing** (`tools/setup_wif.sh`,
@@ -143,8 +144,8 @@ Browser (/admin → "Add a device")
   │     holding a token nobody has.
   │
   └─ 5. Operator presses Flash. <esp-web-install-button manifest="/admin/provision/<nonce>/
-        manifest.json"> prompts for the serial port and writes all four parts in ascending offset:
-        bootloader 0x0, partition-table 0x8000, nvs 0x9000, app (ota_0) 0x20000. The NVS part
+        manifest.json"> prompts for the serial port and writes all five parts in ascending offset:
+        bootloader 0x0, partition-table 0x8000, nvs 0x9000, ota_data_initial 0x10000, app (ota_0) 0x20000. The NVS part
         resolves to /admin/provision/<nonce>/nvs.bin — admin-gated, no-store, TTL-bounded.
 ```
 
@@ -199,13 +200,13 @@ provides.
 4. **The manifest is served, not stored.** Rather than generating a static
    `/firmware/manifest.json` at release time (the original plan — which would have drifted from
    `firmware.version` the first time someone forgot to regenerate it), the broker builds it per
-   request from live config. `version` comes from `firmware.version`; the four part offsets are
+   request from live config. `version` comes from `firmware.version`; the five part offsets are
    Go constants checked against `firmware/partitions.csv` by
    `TestProvisionManifestMatchesPartitionLayout`, which also asserts they ascend.
 
    Release process is therefore unchanged except for one step: copy `bootloader.bin`,
-   `partition-table.bin`, and `meeting_display.bin` into `firmware.dir` after each
-   `idf.py build`. The preflight endpoint checks all three exist and names the missing one.
+   `partition-table.bin`, `ota_data_initial.bin`, and `meeting_display.bin` into `firmware.dir` after each
+   `idf.py build`. The preflight endpoint checks all four exist and names the missing one.
 
 ### NVS image builder, in Go (the one genuinely hard part)
 
