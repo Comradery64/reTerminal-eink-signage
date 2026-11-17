@@ -414,3 +414,44 @@ func TestExpectedWakeMetricSurvivesIngest(t *testing.T) {
 		t.Errorf("Snapshot ExpectedWake = %d, want 3600", snap.ExpectedWake)
 	}
 }
+
+// The 09:00 switch from the hourly to the 10-minute cadence: the display fetches its picture and
+// is told to sleep 600 s, but its telemetry (and so "last seen") arrives ~30 s later. In that gap
+// the staleness rule must still use the previous sleep, or a unit last seen 60 min ago is judged
+// against 2 x 600 s and reported offline.
+func TestExpectedWakeOnlyChangesWhenTheWakesReportArrives(t *testing.T) {
+	s := New()
+	t0 := time.Date(2026, 11, 17, 16, 5, 0, 0, time.UTC)
+	s.Ingest("rt-a", Report{}, t0)
+	s.SetExpectedWake("rt-a", 3600) // first ever: nothing to compare to, applies at once
+	snap, _ := s.Snapshot("rt-a")
+	if snap.ExpectedWake != 3600 {
+		t.Fatalf("first sleep should apply immediately, got %d", snap.ExpectedWake)
+	}
+
+	s.SetExpectedWake("rt-a", 600) // 17:05 fetch: told to sleep 10 min from now on
+	snap, _ = s.Snapshot("rt-a")
+	if snap.ExpectedWake != 3600 {
+		t.Fatalf("between the fetch and its report the old sleep must stand, got %d", snap.ExpectedWake)
+	}
+
+	s.Ingest("rt-a", Report{}, t0.Add(3633*time.Second)) // the report ~30 s later
+	snap, _ = s.Snapshot("rt-a")
+	if snap.ExpectedWake != 600 {
+		t.Fatalf("after the report the new sleep applies, got %d", snap.ExpectedWake)
+	}
+}
+
+// A display that fetches but never reports (e.g. its network breaks mid-wake) keeps being judged
+// against the sleep from its last completed wake.
+func TestAFetchWithoutAReportDoesNotChangeTheThreshold(t *testing.T) {
+	s := New()
+	t0 := time.Date(2026, 11, 17, 16, 5, 0, 0, time.UTC)
+	s.Ingest("rt-b", Report{}, t0)
+	s.SetExpectedWake("rt-b", 3600)
+	s.SetExpectedWake("rt-b", 600)
+	s.SetExpectedWake("rt-b", 600)
+	if snap, _ := s.Snapshot("rt-b"); snap.ExpectedWake != 3600 {
+		t.Fatalf("got %d", snap.ExpectedWake)
+	}
+}
