@@ -40,7 +40,13 @@ type state struct {
 	// threshold is a multiple of it, so a smart-mode room sleeping 6h and a flat room on a 10-min
 	// cycle are each judged against their own schedule.
 	expectedWake uint32
-	reported     bool // true once Ingest has been called at least once (firmware telemetry
+	// pendingWake is the sleep sent at the latest display fetch whose telemetry has not arrived
+	// yet. It becomes expectedWake only when that wake's report is ingested: the device fetches its
+	// picture, then spends ~30 s refreshing the panel before it posts telemetry, and judging
+	// "last seen" against the NEW sleep during that gap made a display look 60 minutes overdue
+	// against a 10-minute cycle at every 09:00 switch from the hourly to the business-hours cadence.
+	pendingWake uint32
+	reported    bool // true once Ingest has been called at least once (firmware telemetry
 	// received) — distinct from having a roomStatus, which SetRoomStatus sets independently and
 	// much earlier (as soon as the poller can compute a schedule, before any device has ever
 	// phoned home). Without this, a device that's only ever gotten a room-status update — the
@@ -133,8 +139,12 @@ func (s *Store) Ingest(deviceID string, r Report, now time.Time) {
 	if r.RenderedBool {
 		lastRendered = now
 	}
+	expected := st.expectedWake
+	if st.pendingWake > 0 {
+		expected = st.pendingWake // this wake's report is in: the sleep it was sent now applies
+	}
 	*st = state{last: r, lastSeen: now, lastRendered: lastRendered, roomStatus: st.roomStatus,
-		expectedWake: st.expectedWake, reported: true}
+		expectedWake: expected, reported: true}
 	s.mu.Unlock()
 
 	// Disk I/O must never happen under the fleet-wide RWMutex above, and must never block this
@@ -270,7 +280,8 @@ func (s *Store) SetRoomStatus(deviceID, status string) {
 	s.mu.Unlock()
 }
 
-// SetExpectedWake records the sleep the broker just sent deviceID (see state.expectedWake).
+// SetExpectedWake records the sleep the broker just sent deviceID. It is judged against from the
+// device's next telemetry report on (see state.pendingWake), not from the fetch itself.
 // Callers pass the firmware-clamped value; 0 is ignored (no schedule was sent).
 func (s *Store) SetExpectedWake(deviceID string, seconds uint32) {
 	if seconds == 0 {
@@ -282,7 +293,10 @@ func (s *Store) SetExpectedWake(deviceID string, seconds uint32) {
 		st = &state{}
 		s.m[deviceID] = st
 	}
-	st.expectedWake = seconds
+	st.pendingWake = seconds
+	if st.expectedWake == 0 {
+		st.expectedWake = seconds // nothing to be judged against yet: take it straight away
+	}
 	s.mu.Unlock()
 }
 
