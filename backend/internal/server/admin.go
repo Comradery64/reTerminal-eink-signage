@@ -215,6 +215,24 @@ func (s *Server) handleAdminDeleteRoom(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin?saved=rooms", http.StatusSeeOther)
 }
 
+// handleAdminForceRefresh queues a one-shot full repaint for a single device: its next fetch gets
+// the full image (200) instead of 304, so the panel does a fresh full-colour cycle. No config
+// change and no restart.
+func (s *Server) handleAdminForceRefresh(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	deviceID := r.PostForm.Get("device_id")
+	if _, ok := s.cfg.Load().RoomByDeviceID(deviceID); !ok {
+		http.Redirect(w, r, "/admin?error="+template.URLQueryEscaper("unknown device "+deviceID)+"#rooms", http.StatusSeeOther)
+		return
+	}
+	s.cache.RequestForceRefresh(deviceID)
+	s.log.Info("admin forced refresh queued", "device", deviceID)
+	http.Redirect(w, r, "/admin?saved=rooms", http.StatusSeeOther)
+}
+
 func (s *Server) handleAdminSaveWakeDefaults(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
@@ -813,6 +831,10 @@ form button[type=submit]:not(.danger):not(.ghost) { margin-top: var(--space-4); 
 <td>{{if .TokenConfigured}}configured{{else}}<em>none</em>{{end}}</td>
 <td><button type="button" class="linklike" data-edit-room
   data-device="{{.DeviceID}}" data-name="{{.Name}}" data-room="{{.Room}}" data-label="{{.Label}}" data-location="{{.Location}}">Edit</button>
+<form method="POST" action="/admin/rooms/refresh" style="display:inline">
+<input type="hidden" name="device_id" value="{{.DeviceID}}">
+<button type="submit" class="linklike" title="Repaint this display fully at its next wake (within one wake interval)">Refresh</button>
+</form>
 <form method="POST" action="/admin/rooms/delete" style="display:inline">
 <input type="hidden" name="device_id" value="{{.DeviceID}}">
 <button type="submit" class="danger" onclick="return confirm('Remove {{.Name}} from the fleet? This can\'t be undone here.')">Remove</button>

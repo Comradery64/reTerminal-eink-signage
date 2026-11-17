@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/cache"
 	"github.com/Comradery64/reTerminal-eink-signage/backend/internal/calendar"
 	"io"
 	"net/http"
@@ -1007,5 +1008,50 @@ func TestAdminPageHasDiscoverableChangePasswordLink(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), `href="/admin/change-password"`) {
 		t.Error("admin page has no discoverable link to change-password")
+	}
+}
+
+// /admin "Refresh" queues a one-shot full repaint for exactly one device: its next fetch gets 200
+// instead of 304, the one after is back to 304, and an unknown device is rejected.
+func TestAdminForceRefreshOneDeviceOnce(t *testing.T) {
+	s := testServerWithAuth(t)
+	s.cache.Set("rt-1", cache.Entry{ETag: `"abc123"`})
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+	client := loggedInAdminClient(t, srv)
+
+	fetch := func() *http.Response {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/display/rt-1", nil)
+		req.Header.Set("Authorization", "Bearer "+testToken)
+		req.Header.Set("If-None-Match", `"abc123"`)
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	if got := fetch().StatusCode; got != http.StatusNotModified {
+		t.Fatalf("before refresh: want 304, got %d", got)
+	}
+	resp, err := client.PostForm(srv.URL+"/admin/rooms/refresh", url.Values{"device_id": {"rt-1"}})
+	if err != nil || resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("refresh: err=%v resp=%v", err, resp)
+	}
+	r := fetch()
+	if r.StatusCode != http.StatusOK || r.Header.Get("X-Forced-Refresh") != "1" {
+		t.Fatalf("after refresh: want 200 + X-Forced-Refresh, got %d", r.StatusCode)
+	}
+	if got := fetch().StatusCode; got != http.StatusNotModified {
+		t.Fatalf("one-shot: want 304 afterwards, got %d", got)
+	}
+	if s.cache.TakeForceRefresh("rt-nope") {
+		t.Fatal("other devices must not be affected")
+	}
+	loc := ""
+	if resp, err := client.PostForm(srv.URL+"/admin/rooms/refresh", url.Values{"device_id": {"rt-nope"}}); err == nil {
+		loc = resp.Header.Get("Location")
+	}
+	if !strings.Contains(loc, "error=") || s.cache.TakeForceRefresh("rt-nope") {
+		t.Fatalf("unknown device must be rejected and not queued, location=%q", loc)
 	}
 }
