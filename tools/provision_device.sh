@@ -4,10 +4,13 @@
 #
 # Usage:
 #   ./provision_device.sh <device_id> <room_email> <wifi_ssid> [wifi_psk]
+#   # Keep the PSK out of argv/shell history: pass "-" to read it from stdin, or set WIFI_PSK_FILE.
+#   #   <your-secret-store read command> | ./provision_device.sh <device_id> <room_email> <ssid> -
+#   #   WIFI_PSK_FILE=/path/to/psk ./provision_device.sh <device_id> <room_email> <ssid>
 #   # WPA2-Enterprise instead of PSK:
 #   EAP_ID=user@corp EAP_USER=user EAP_PASS=secret ./provision_device.sh <device_id> <room_email> <ssid>
 #   # Optional mTLS (Approach A): embed a step-ca-issued per-device client cert+key into NVS.
-#   # See Networking/meeting-displays-broker-access.md Part 2. Issue e.g.:
+#   # Issue the per-device cert from your internal CA, e.g.:
 #   #   step ca certificate <device_id> dev.crt dev.key --provisioner acme|admin ...
 #   CLIENT_CERT_FILE=dev.crt CLIENT_KEY_FILE=dev.key ./provision_device.sh <device_id> <room_email> <ssid> <psk>
 #
@@ -18,6 +21,14 @@ DEVICE_ID="${1:?device_id required}"
 ROOM_EMAIL="${2:?room_email required}"
 WIFI_SSID="${3:?wifi_ssid required}"
 WIFI_PSK="${4:-}"
+# PSK without argv exposure: "-" = stdin, or WIFI_PSK_FILE. Trailing CR/LF is stripped.
+if [[ "$WIFI_PSK" == "-" ]]; then
+  WIFI_PSK="$(cat | tr -d '\r\n')"
+elif [[ -z "$WIFI_PSK" && -n "${WIFI_PSK_FILE:-}" ]]; then
+  WIFI_PSK="$(tr -d '\r\n' < "$WIFI_PSK_FILE")"
+fi
+# The NVS CSV is comma-separated; a comma in a value would silently split it into extra columns.
+case "$WIFI_PSK$WIFI_SSID" in *,*) echo "wifi_ssid/wifi_psk must not contain a comma (NVS CSV limit)" >&2; exit 1;; esac
 
 OUT_DIR="$(mktemp -d)"
 NVS_CSV="$OUT_DIR/nvs.csv"
@@ -51,6 +62,7 @@ TOKEN_SHA="$(printf '%s' "$TOKEN" | openssl dgst -sha256 -hex | awk '{print $2}'
 # 0x6000 = nvs partition size from partitions.csv.
 python "$IDF_PATH/components/nvs_flash/nvs_partition_generator/nvs_partition_gen.py" \
   generate "$NVS_CSV" "$NVS_BIN" 0x6000
+rm -f "$NVS_CSV"   # holds the PSK and token in plaintext; only the NVS image is kept
 
 cat <<EOF
 
