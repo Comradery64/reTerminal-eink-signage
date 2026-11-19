@@ -66,6 +66,6 @@ constexpr int     PIN_I2C1_SDA = 39;
 constexpr int     PIN_I2C1_SCL = 40;
 constexpr uint8_t SHT4X_ADDR   = 0x44;
 
-constexpr const char* FIRMWARE_VERSION = "1.0.0";
+constexpr const char* FIRMWARE_VERSION = "1.0.1";
 
 } // namespace cfg

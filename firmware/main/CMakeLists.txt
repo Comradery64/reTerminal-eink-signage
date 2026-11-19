@@ -13,6 +13,7 @@ if(CONFIG_MD_BENCH_STATIC_FRAME)
         EMBED_FILES "bench/frame.mdpf"
         REQUIRES
             driver
+            esp_timer
     )
 else()
     idf_component_register(

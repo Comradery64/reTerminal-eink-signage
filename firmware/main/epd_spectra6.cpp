@@ -5,6 +5,7 @@
 #include "driver/gpio.h"
 #include "esp_rom_sys.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -27,6 +28,11 @@ static bool s_inited = false;
 // GDEP073E01/ED2208 holds BUSY LOW while working and releases it HIGH when ready.
 // If the first on-hardware refresh hangs in wait_busy(), flip this to 0 and re-test.
 static constexpr int EPD_BUSY_READY_LEVEL = 1;
+
+// Full-refresh BUSY limit. Healthy panels finish in ~26 s; 2026-11 four units hit the old 40 s
+// limit, and the abort left washed-out colours. 90 s covers a slow panel; a truly stuck one still
+// times out and reports err="render" (telemetry wake_ms then reads ~96 s instead of ~43 s).
+static constexpr int REFRESH_TIMEOUT_MS = 90000;
 
 static inline void dc(int level)  { gpio_set_level((gpio_num_t)cfg::PIN_EPD_DC, level); }
 static inline void rst(int level) { gpio_set_level((gpio_num_t)cfg::PIN_EPD_RST, level); }
@@ -155,13 +161,21 @@ bool show(const uint8_t* body, size_t body_len, const mdpf::Header& h) {
     cmd(0x50); data1(0x3F);             // CDI border setting for full refresh
     cmd(0x12); data1(0x00);             // display refresh
     vTaskDelay(pdMS_TO_TICKS(2));       // GxEPD2 delay(1) before polling BUSY
-    if (!wait_busy()) {                 // <-- the long, energy-dominant wait (Spectra 6 full refresh)
-        ESP_LOGE(TAG, "refresh BUSY timeout — panel may be misconfigured");
-        return false;
-    }
+    // The long, energy-dominant wait (Spectra 6 full refresh, ~26 s on a healthy panel). Some
+    // panels in the fleet ran past the old 40 s limit; giving up then and hibernating mid-waveform
+    // left the colours half-developed (green drawn yellow, blue faded). Allow far more headroom.
+    const int64_t t_refresh = esp_timer_get_time();
+    const bool refreshed = wait_busy(REFRESH_TIMEOUT_MS);
+    const int refresh_ms = (int)((esp_timer_get_time() - t_refresh) / 1000);
+    // Always power the panel off properly, even after a timeout, so the controller is never
+    // hibernated while still driving the pixels.
     cmd(0x02); data1(0x00);             // power off
     (void)wait_busy(3000);              // best-effort; don't fail the render if power-off lags
-    ESP_LOGI(TAG, "refresh complete");
+    if (!refreshed) {
+        ESP_LOGE(TAG, "refresh BUSY timeout after %d ms", refresh_ms);
+        return false;
+    }
+    ESP_LOGI(TAG, "refresh complete in %d ms", refresh_ms);
     return true;
 }
 
