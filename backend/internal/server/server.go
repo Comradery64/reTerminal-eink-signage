@@ -161,6 +161,8 @@ func (s *Server) Handler() http.Handler {
 	// Cluster-internal-only, unauthenticated (same trust boundary as /metrics) — must never be
 	// added to the public Ingress; see docs/DASHBOARD.md Decisions.
 	mux.HandleFunc("GET /api/v1/status", s.handleStatusJSON)
+	// Same internal-only group: per-device one-shot repaint for the CLI (see handleRefreshJSON).
+	mux.HandleFunc("POST /api/v1/refresh/{device}", s.handleRefreshJSON)
 	// Machine-readable twin of the /admin and /manager persistence strip — the hook for a Tier 3
 	// blackbox probe or a Tier 1 cron to alert on. Deliberately in the SAME unauthenticated,
 	// internal-only group as /api/v1/status and /metrics above, not behind requireRole: an

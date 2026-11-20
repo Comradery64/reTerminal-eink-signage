@@ -67,3 +67,27 @@ th { background: #f5f5f5; }
 </body>
 </html>
 `))
+
+// handleRefreshJSON serves POST /api/v1/refresh/{device}: the CLI twin of /admin -> Rooms ->
+// Refresh. It queues the same one-shot full repaint (the device's next fetch gets 200 instead of
+// 304) for exactly one device; no config change, no restart. It sits in the same unauthenticated,
+// cluster-internal-only group as /api/v1/status and /metrics (never on the public Ingress, which
+// routes only the device paths), so the trust boundary is cluster access, e.g.
+//
+//	kubectl create --raw /api/v1/namespaces/<ns>/services/broker:80/proxy/api/v1/refresh/<device> -f /dev/null
+//
+// Repeating the call is harmless: the flag is a single bit per device, consumed by the next fetch,
+// so it can never cost more than one extra repaint per wake.
+func (s *Server) handleRefreshJSON(w http.ResponseWriter, r *http.Request) {
+	deviceID := r.PathValue("device")
+	w.Header().Set("Content-Type", "application/json")
+	if _, ok := s.cfg.Load().RoomByDeviceID(deviceID); !ok {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]any{"device": deviceID, "queued": false, "error": "unknown device"})
+		return
+	}
+	s.cache.RequestForceRefresh(deviceID)
+	s.log.Info("api forced refresh queued", "device", deviceID)
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]any{"device": deviceID, "queued": true})
+}

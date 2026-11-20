@@ -93,6 +93,11 @@ three deploy tiers identically — nothing here is k3s-specific.
 - `GET /status` — a minimal server-rendered HTML table over the same data (no JS framework, no
   build step — consistent with this project's "thin client, simple server" philosophy). A
   `?format=json` or separate path covers anyone who wants to poll it programmatically.
+- `POST /api/v1/refresh/{device}` — CLI twin of /admin → Rooms → Refresh: queues a one-shot full
+  repaint for one device (its next fetch gets 200 instead of 304). `202 {"queued":true}`, `404` for an
+  unknown device; repeating it is harmless (one bit per device). Same internal-only group as
+  `/api/v1/status`. On k3s: `kubectl create --raw
+  /api/v1/namespaces/<ns>/services/broker:80/proxy/api/v1/refresh/<device> -f /dev/null`.
 - Data source: purely in-memory (`cache.Store` + `telemetry.Store`), same as `/metrics` — no new
   storage, no database.
 
