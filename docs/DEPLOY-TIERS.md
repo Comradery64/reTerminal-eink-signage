@@ -76,7 +76,7 @@ first time they try to save anything.
 
 **Devices reach it over TLS via:** a reverse proxy (Caddy is the path of least ceremony — see the
 `README.md` above) or, if you already terminate TLS elsewhere on this host, point the proxy's
-upstream at `localhost:8080`. Keep `/metrics`, `/status`, and `/api/v1/status` off any public
+upstream at `localhost:8080`. Keep `/metrics`, `/status`, `/api/v1/status` and `/api/v1/refresh` off any public
 listener — same trust boundary Tier 3's Ingress has always used (see `docs/DASHBOARD.md`
 Decisions) — reach them via `curl localhost:8080/...` on the host, or SSH tunnel/port-forward
 equivalent.

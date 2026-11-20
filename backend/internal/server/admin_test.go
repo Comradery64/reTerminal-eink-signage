@@ -1055,3 +1055,54 @@ func TestAdminForceRefreshOneDeviceOnce(t *testing.T) {
 		t.Fatalf("unknown device must be rejected and not queued, location=%q", loc)
 	}
 }
+
+func TestAPIForceRefreshOneDeviceOnce(t *testing.T) {
+	s := testServerWithAuth(t)
+	s.cache.Set("rt-1", cache.Entry{ETag: `"abc123"`})
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+
+	fetch := func() *http.Response {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/display/rt-1", nil)
+		req.Header.Set("Authorization", "Bearer "+testToken)
+		req.Header.Set("If-None-Match", `"abc123"`)
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	post := func(dev string) int {
+		resp, err := srv.Client().Post(srv.URL+"/api/v1/refresh/"+dev, "application/json", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp.StatusCode
+	}
+	if got := fetch().StatusCode; got != http.StatusNotModified {
+		t.Fatalf("before refresh: want 304, got %d", got)
+	}
+	if got := post("rt-1"); got != http.StatusAccepted {
+		t.Fatalf("refresh: want 202, got %d", got)
+	}
+	if got := post("rt-1"); got != http.StatusAccepted { // repeat is idempotent, still one repaint
+		t.Fatalf("repeat refresh: want 202, got %d", got)
+	}
+	r := fetch()
+	if r.StatusCode != http.StatusOK || r.Header.Get("X-Forced-Refresh") != "1" {
+		t.Fatalf("after refresh: want 200 + X-Forced-Refresh, got %d", r.StatusCode)
+	}
+	if got := fetch().StatusCode; got != http.StatusNotModified {
+		t.Fatalf("one-shot: want 304 afterwards, got %d", got)
+	}
+	if got := post("rt-nope"); got != http.StatusNotFound || s.cache.TakeForceRefresh("rt-nope") {
+		t.Fatalf("unknown device must be 404 and not queued, got %d", got)
+	}
+	resp, err := srv.Client().Get(srv.URL + "/api/v1/refresh/rt-1")
+	if err != nil || resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("GET must not queue a repaint: err=%v status=%v", err, resp)
+	}
+	if s.cache.TakeForceRefresh("rt-1") {
+		t.Fatal("GET queued a repaint")
+	}
+}
