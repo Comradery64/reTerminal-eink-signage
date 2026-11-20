@@ -118,6 +118,9 @@ func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 	// Hysteresis + dedupe + dispatch all live in the alert manager; this is non-blocking.
 	s.alerts.EvaluateBattery(device, s.roomName(device), rep.BatteryPct, rep.BatteryMV, now)
 	s.alerts.EvaluateCharging(device, s.roomName(device), rep.BatteryMV, now)
+	if snap, ok := s.tlm.Snapshot(device); ok {
+		s.alerts.EvaluateDeviceError(device, s.roomName(device), telemetry.ErrLabel(rep.ErrCode), snap.ConsecutiveErrors, now)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

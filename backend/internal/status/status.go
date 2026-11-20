@@ -26,6 +26,10 @@ type Device struct {
 	RSSI              int    `json:"rssi"`
 	FirmwareVersion   string `json:"firmware_version"`
 	BootCount         int    `json:"boot_count"`
+	// LastError is the err code of the device's latest report ("" when it was clean) and
+	// ConsecutiveErrors how many reports in a row have carried one.
+	LastError         string `json:"last_error,omitempty"`
+	ConsecutiveErrors int    `json:"consecutive_errors"`
 	// Status is one of "ok" | "stale" | "low_battery" | "unreported", derived from the same
 	// thresholds notify.Manager alerts on (config.AlertConfig) so this view and the building-
 	// manager alert never disagree about the same device.
@@ -67,6 +71,8 @@ func Build(cfg *config.Config, tlm *telemetry.Store, now time.Time) []Device {
 		d.BatteryMV = snap.Report.BatteryMV
 		d.RSSI = snap.Report.RSSI
 		d.FirmwareVersion = snap.Report.FirmwareVer
+		d.LastError = snap.Report.ErrCode
+		d.ConsecutiveErrors = snap.ConsecutiveErrors
 		d.BootCount = snap.Report.BootCount
 		d.LastSeenSeconds = int64(now.Sub(snap.LastSeen).Seconds())
 		if !snap.LastRendered.IsZero() {

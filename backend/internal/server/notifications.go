@@ -70,11 +70,17 @@ func (s *Server) vapidKey() string {
 }
 
 // PushSubscriptions implements notify.PushSubscriptions from the live config: the subscriptions
-// for location plus those that chose every location ("").
-func (s *Server) PushSubscriptions(location string) []notify.PushSubscription {
+// for location plus those that chose every location (""). adminOnly keeps only admin accounts'
+// browsers, for operational alerts the office managers don't need.
+func (s *Server) PushSubscriptions(location string, adminOnly bool) []notify.PushSubscription {
 	var out []notify.PushSubscription
 	cfg := s.cfg.Load()
 	for _, sub := range cfg.PushSubscriptions {
+		if adminOnly {
+			if u, ok := cfg.UserByUsername(sub.Username); !ok || u.Role != "admin" {
+				continue
+			}
+		}
 		// A subscription made before its owner was limited must not keep delivering other offices'
 		// alerts: the account's current locations apply at send time, not just at subscribe time.
 		if u, ok := cfg.UserByUsername(sub.Username); ok && u.Limited() && !u.CanSeeLocation(location) {
@@ -103,6 +109,9 @@ func (s *Server) LarkDelivery(location string) string {
 
 // LarkFallbackChat implements notify.LarkRoutes.
 func (s *Server) LarkFallbackChat() string { return s.cfg.Load().Alerts.LarkFallbackChatID }
+
+// LarkAdminChat implements notify.LarkRoutes.
+func (s *Server) LarkAdminChat() string { return s.cfg.Load().Alerts.LarkAdminChatID }
 
 // deviceLocation is the location a device's alerts route to (its room's, else the default).
 func (s *Server) deviceLocation(deviceID string) string {
@@ -151,6 +160,7 @@ func (s *Server) checkStale(now time.Time) {
 			continue // never reported since start: unknown, not offline (same as /metrics)
 		}
 		silent := now.Sub(snap.LastSeen)
-		s.alerts.EvaluateStale(room.DeviceID, room.Name, silent > status.StaleThreshold(cfg, snap), silent, now)
+		stale := silent > status.StaleThreshold(cfg, snap) && silent >= cfg.Alerts.OfflineMinSilence
+		s.alerts.EvaluateStale(room.DeviceID, room.Name, stale, silent, now)
 	}
 }

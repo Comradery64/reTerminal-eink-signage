@@ -110,7 +110,7 @@ type userPushSubs struct {
 	username string
 }
 
-func (u userPushSubs) PushSubscriptions(string) []notify.PushSubscription { // a test ignores location
+func (u userPushSubs) PushSubscriptions(string, bool) []notify.PushSubscription { // a test ignores location
 	var out []notify.PushSubscription
 	for _, sub := range u.s.cfg.Load().PushSubscriptionsFor(u.username) {
 		out = append(out, notify.PushSubscription{Endpoint: sub.Endpoint, P256DH: sub.P256DH, Auth: sub.Auth, Created: sub.Created})
