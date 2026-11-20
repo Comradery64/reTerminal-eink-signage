@@ -1106,3 +1106,24 @@ func TestAPIForceRefreshOneDeviceOnce(t *testing.T) {
 		t.Fatal("GET queued a repaint")
 	}
 }
+
+// Saving the /admin firmware form (version/url/dir only) must keep the staged-rollout list, not
+// silently widen an update to the whole fleet.
+func TestAdminFirmwareSaveKeepsDevices(t *testing.T) {
+	s := testServerWithAuth(t)
+	s.cfg.Load().Firmware.Devices = []string{"rt-1"}
+	srv := httptest.NewTLSServer(s.Handler())
+	defer srv.Close()
+	client := loggedInAdminClient(t, srv)
+	resp, err := client.PostForm(srv.URL+"/admin/firmware/save", url.Values{"version": {"1.0.1"}, "url": {"https://x/fw.bin"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loc := resp.Header.Get("Location"); strings.Contains(loc, "error=") {
+		t.Fatalf("save rejected: %s", loc)
+	}
+	fw := s.cfg.Load().Firmware
+	if fw.Version != "1.0.1" || len(fw.Devices) != 1 || fw.Devices[0] != "rt-1" {
+		t.Fatalf("want version 1.0.1 and devices [rt-1], got %q %v", fw.Version, fw.Devices)
+	}
+}

@@ -201,6 +201,11 @@ type FirmwareConfig struct {
 	URL     string `yaml:"url"`     // HTTPS URL of the signed .bin (may point at this broker's /firmware/)
 	Dir     string `yaml:"dir"`     // optional: serve image files from this dir at /firmware/
 
+	// Devices limits the advertisement to these device IDs (a staged rollout: one unit first, then
+	// more). Empty means every device. Lets one remote unit be updated without a USB flash while the
+	// rest of the fleet stays on its current build.
+	Devices []string `yaml:"devices"`
+
 	// WebToolsURL is the ESP Web Tools module the /admin "Add a device" wizard loads to flash a
 	// unit over WebSerial. Defaults to the public CDN build, which requires the *operator's
 	// browser* (not the broker) to reach the internet. On an isolated network, vendor the file
@@ -907,6 +912,7 @@ func (c *Config) clone() *Config {
 		next.Users[i].Locations = append([]string(nil), c.Users[i].Locations...)
 	}
 	next.Alerts.Channels = append([]string(nil), c.Alerts.Channels...)
+	next.Firmware.Devices = append([]string(nil), c.Firmware.Devices...)
 	next.PushSubscriptions = append([]PushSubscription(nil), c.PushSubscriptions...)
 	next.Locations = append([]Location(nil), c.Locations...)
 	return &next
