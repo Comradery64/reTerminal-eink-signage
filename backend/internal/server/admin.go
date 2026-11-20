@@ -332,6 +332,9 @@ func (s *Server) handleAdminSaveFirmware(w http.ResponseWriter, r *http.Request)
 		URL:         r.PostForm.Get("url"),
 		Dir:         r.PostForm.Get("dir"),
 		WebToolsURL: s.cfg.Load().Firmware.WebToolsURL,
+		// No form field either: keep the staged-rollout list instead of silently widening an
+		// update to the whole fleet when someone edits the version or URL.
+		Devices: s.cfg.Load().Firmware.Devices,
 	}
 	newCfg, err := s.cfg.Load().WithFirmware(fw)
 	if err != nil {

@@ -92,6 +92,7 @@ firmware:
   version: ""                                  # e.g. "1.1.0"
   url: ""                                      # e.g. "https://displays.example.internal/firmware/meeting_display-1.1.0.bin"
   dir: ""                                      # e.g. "/etc/meeting-displays/firmware" to serve images locally
+  devices: []                                  # e.g. ["rt-lobby"]: only these units are offered the update; [] = all
   # The /admin "Add a device" wizard needs bootloader.bin, partition-table.bin, and
   # meeting_display.bin present in `dir` (copy them there after each `idf.py build`).
   # web_tools_url is the ESP Web Tools module the OPERATOR'S BROWSER loads — the broker itself

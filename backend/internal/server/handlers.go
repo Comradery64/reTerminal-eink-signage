@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
@@ -48,7 +49,7 @@ func (s *Server) handleDisplay(w http.ResponseWriter, r *http.Request) {
 	s.tlm.SetExpectedWake(device, config.ClampWakeSeconds(nextWake))
 	w.Header().Set("ETag", entry.ETag)
 	setNoWake(w, nextWake)
-	s.setFirmwareHeaders(w, cfg) // OTA advertisement (sent on both 200 and 304)
+	s.setFirmwareHeaders(w, cfg, device) // OTA advertisement (sent on both 200 and 304)
 
 	// Once-daily anti-ghosting override: force a real repaint even though content is unchanged,
 	// so a room that never changes doesn't sit on the same frame indefinitely. Opt-in via
@@ -84,9 +85,13 @@ func (s *Server) handleDisplay(w http.ResponseWriter, r *http.Request) {
 		"etag", entry.ETag, "next_wake_s", nextWake, "forced_refresh", forceRefresh)
 }
 
-// setFirmwareHeaders advertises the OTA target to devices. No-op if no firmware version is set.
-func (s *Server) setFirmwareHeaders(w http.ResponseWriter, cfg *config.Config) {
+// setFirmwareHeaders advertises the OTA target to devices. No-op if no firmware version is set,
+// or if firmware.devices is non-empty and does not list this device (staged rollout).
+func (s *Server) setFirmwareHeaders(w http.ResponseWriter, cfg *config.Config, device string) {
 	if cfg.Firmware.Version == "" {
+		return
+	}
+	if len(cfg.Firmware.Devices) > 0 && !slices.Contains(cfg.Firmware.Devices, device) {
 		return
 	}
 	w.Header().Set("X-Fw-Target", cfg.Firmware.Version)

@@ -270,3 +270,24 @@ func TestDisplayRecordsClampedExpectedWake(t *testing.T) {
 		t.Errorf("ExpectedWake = %d, want %d (clamped from %d)", snap.ExpectedWake, config.MaxWakeSeconds, sent)
 	}
 }
+
+// firmware.devices stages a rollout: only listed devices see the OTA target; empty means all.
+func TestFirmwareHeadersOnlyForListedDevices(t *testing.T) {
+	s := testServer()
+	cfg := s.cfg.Load()
+	headerFor := func(device string) string {
+		rec := httptest.NewRecorder()
+		s.setFirmwareHeaders(rec, cfg, device)
+		return rec.Header().Get("X-Fw-Target")
+	}
+	if got := headerFor("rt-1"); got != "1.1.0" {
+		t.Fatalf("empty devices list: want every device offered 1.1.0, got %q", got)
+	}
+	cfg.Firmware.Devices = []string{"rt-orion"}
+	if got := headerFor("rt-orion"); got != "1.1.0" {
+		t.Fatalf("listed device: want 1.1.0, got %q", got)
+	}
+	if got := headerFor("rt-1"); got != "" {
+		t.Fatalf("unlisted device must not be offered the update, got %q", got)
+	}
+}
