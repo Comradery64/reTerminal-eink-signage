@@ -253,7 +253,7 @@ type AlertConfig struct {
 	// threshold (two missed check-ins): with a 10-minute cadence that threshold is 20 minutes, and
 	// "30m" here makes it 30. 0 = no extra minimum.
 	OfflineMinSilence time.Duration `yaml:"offline_min_silence,omitempty"`
-	WebPush            WebPushConfig `yaml:"webpush,omitempty"`
+	WebPush           WebPushConfig `yaml:"webpush,omitempty"`
 
 	// MessageStyle is how alert messages read: "plain" (default; what's wrong and what to do),
 	// "minimal" (one short line) or "detailed" (adds device ID and raw readings).
