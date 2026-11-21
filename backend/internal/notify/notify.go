@@ -35,6 +35,10 @@ type Message struct {
 	// Location is the room's office (config Location ID): Lark DMs that location's person and
 	// browser push reaches only that location's subscribers. "" = no location routing.
 	Location string
+	// Admin marks an operational alert (offline, back online, device errors) that belongs to the
+	// people who run the fleet, not the office groups that only need battery news: Lark sends it to
+	// alerts.lark_admin_chat_id when set, and web push only to admin accounts.
+	Admin bool
 }
 
 // Notifier sends a Message to some external channel.
@@ -153,6 +157,7 @@ type Manager struct {
 	mu       sync.Mutex
 	state    map[string]*devState
 	stale    map[string]*devState // per-device offline latch, independent of the battery latch
+	faults   map[string]*devState // per-device "keeps reporting errors" latch
 	locate   func(deviceID string) string
 }
 
@@ -212,7 +217,7 @@ func NewManagerWith(n Notifier, lowPct, clearPct int, renotify time.Duration, lo
 	log.Info("alert manager ready", "notifier", n.Name(), "low_pct", lowPct, "clear_pct", clearPct)
 	return &Manager{
 		notifier: n, lowPct: lowPct, clearPct: clearPct, renotify: renotify,
-		log: log, state: make(map[string]*devState), stale: make(map[string]*devState),
+		log: log, state: make(map[string]*devState), stale: make(map[string]*devState), faults: make(map[string]*devState),
 	}
 }
 
@@ -320,11 +325,11 @@ func (m *Manager) EvaluateStale(deviceID, room string, stale bool, silentFor tim
 	case StaleOffline:
 		m.log.Warn("display offline alert", "device", deviceID, "room", room, "silent_for", silentFor.Round(time.Minute))
 		title, text := offlineText(cfg.Style, name, deviceID, silentFor)
-		m.dispatch(Message{Title: title, Text: text, DeviceID: deviceID, Room: room})
+		m.dispatch(Message{Title: title, Text: text, DeviceID: deviceID, Room: room, Admin: true})
 	case StaleRecovered:
 		m.log.Info("display recovered", "device", deviceID, "room", room)
 		title, text := recoveredText(cfg.Style, name, deviceID)
-		m.dispatch(Message{Title: title, Text: text, DeviceID: deviceID, Room: room})
+		m.dispatch(Message{Title: title, Text: text, DeviceID: deviceID, Room: room, Admin: true})
 	}
 	return ev
 }
@@ -417,4 +422,84 @@ func plainDuration(d time.Duration) string {
 		return fmt.Sprintf("about %d hours", n)
 	}
 	return fmt.Sprintf("about %d days", int(d.Round(24*time.Hour)/(24*time.Hour)))
+}
+
+// DeviceErrorThreshold is how many reports in a row must carry an error before the admins hear
+// about it: one failed wake is noise (a Wi-Fi blip, a slow server), three is a unit that is stuck.
+const DeviceErrorThreshold = 3
+
+// EvaluateDeviceError is called on every telemetry report with the report's err code ("" when the
+// wake was clean) and how many reports in a row have now carried one. It alerts the admins once
+// when a unit reaches DeviceErrorThreshold failing reports, repeats only after renotify while it
+// keeps failing, and says so once when a clean report arrives. Same hysteresis as EvaluateStale.
+func (m *Manager) EvaluateDeviceError(deviceID, room, errCode string, consecutive int, now time.Time) StaleEvent {
+	m.mu.Lock()
+	st := m.faults[deviceID]
+	if st == nil {
+		st = &devState{}
+		m.faults[deviceID] = st
+	}
+	cfg := m.current()
+	ev := StaleNone
+	switch {
+	case errCode != "" && consecutive >= DeviceErrorThreshold && (!st.alerting || now.Sub(st.lastNotified) >= cfg.Renotify):
+		ev = StaleOffline
+		st.alerting = true
+		st.lastNotified = now
+	case errCode == "" && st.alerting:
+		ev = StaleRecovered
+		st.alerting = false
+	}
+	m.mu.Unlock()
+
+	name := room
+	if name == "" {
+		name = deviceID
+	}
+	switch ev {
+	case StaleOffline:
+		m.log.Warn("device error alert", "device", deviceID, "room", room, "err", errCode, "consecutive", consecutive)
+		title, text := deviceErrorText(cfg.Style, name, deviceID, errCode, consecutive)
+		m.dispatch(Message{Title: title, Text: text, DeviceID: deviceID, Room: room, Admin: true})
+	case StaleRecovered:
+		m.log.Info("device errors cleared", "device", deviceID, "room", room)
+		title, text := deviceErrorClearedText(cfg.Style, name, deviceID)
+		m.dispatch(Message{Title: title, Text: text, DeviceID: deviceID, Room: room, Admin: true})
+	}
+	return ev
+}
+
+// deviceErrorMeaning says in plain words what a firmware err code means for the person looking at
+// the room. Codes come from firmware/main/app_main.cpp.
+func deviceErrorMeaning(code string) string {
+	switch code {
+	case "render":
+		return "The screen isn't finishing its update, so it may look faded or show old information."
+	case "fetch", "badpayload", "nopayload":
+		return "It can't download its picture from the server, so it may show old information."
+	}
+	return fmt.Sprintf("It keeps reporting the error %q.", code)
+}
+
+func deviceErrorText(style, name, deviceID, code string, consecutive int) (title, text string) {
+	switch NormalizeStyle(style) {
+	case StyleMinimal:
+		return fmt.Sprintf("⚠️ %s: not updating (%s)", name, code), ""
+	case StyleDetailed:
+		return fmt.Sprintf("⚠️ Display not updating: %s", name),
+			fmt.Sprintf("Display %q (device %s) reported err=%q on its last %d check-ins. %s", name, deviceID, code, consecutive, deviceErrorMeaning(code))
+	}
+	return fmt.Sprintf("⚠️ Display not updating: %s", name),
+		fmt.Sprintf("%s Its last %d check-ins all failed.", deviceErrorMeaning(code), consecutive)
+}
+
+func deviceErrorClearedText(style, name, deviceID string) (title, text string) {
+	switch NormalizeStyle(style) {
+	case StyleMinimal:
+		return fmt.Sprintf("✅ %s: updating again", name), ""
+	case StyleDetailed:
+		return fmt.Sprintf("✅ Display updating again: %s", name),
+			fmt.Sprintf("Display %q (device %s) sent a clean report.", name, deviceID)
+	}
+	return fmt.Sprintf("✅ Display updating again: %s", name), ""
 }

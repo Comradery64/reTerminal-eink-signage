@@ -245,7 +245,15 @@ type AlertConfig struct {
 	Channels           []string      `yaml:"channels,omitempty"`
 	LarkApp            LarkAppConfig `yaml:"lark_app,omitempty"`              // app_secret is a secret: "${LARK_APP_SECRET}"
 	LarkFallbackChatID string        `yaml:"lark_fallback_chat_id,omitempty"` // group (oc_…) used only when a location's person can't be reached
-	WebPush            WebPushConfig `yaml:"webpush,omitempty"`
+	// LarkAdminChatID is the admins' group (oc_…) for operational alerts: display offline / back
+	// online and device errors. When set, those go only here and the office groups get battery news
+	// only. Empty keeps every alert on the location routing.
+	LarkAdminChatID string `yaml:"lark_admin_chat_id,omitempty"`
+	// OfflineMinSilence is the shortest silence that counts as offline, on top of the per-device
+	// threshold (two missed check-ins): with a 10-minute cadence that threshold is 20 minutes, and
+	// "30m" here makes it 30. 0 = no extra minimum.
+	OfflineMinSilence time.Duration `yaml:"offline_min_silence,omitempty"`
+	WebPush           WebPushConfig `yaml:"webpush,omitempty"`
 
 	// MessageStyle is how alert messages read: "plain" (default; what's wrong and what to do),
 	// "minimal" (one short line) or "detailed" (adds device ID and raw readings).

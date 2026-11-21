@@ -455,3 +455,33 @@ func TestAFetchWithoutAReportDoesNotChangeTheThreshold(t *testing.T) {
 		t.Fatalf("got %d", snap.ExpectedWake)
 	}
 }
+
+// Consecutive errors count up across failing reports and reset on a clean one; the per-code
+// counter keeps the total and both show up in /metrics.
+func TestIngestCountsDeviceErrors(t *testing.T) {
+	s := New()
+	now := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	for i, code := range []string{"render", "render", "render", "", "fetch", "BAD CODE"} {
+		s.Ingest("rt-1", Report{ErrCode: code}, now.Add(time.Duration(i)*time.Minute))
+	}
+	snap, _ := s.Snapshot("rt-1")
+	if snap.ConsecutiveErrors != 2 {
+		t.Fatalf("after clean + fetch + bad: want 2 consecutive, got %d", snap.ConsecutiveErrors)
+	}
+	var b strings.Builder
+	s.WriteMetrics(&b, now.Add(time.Hour))
+	for _, want := range []string{
+		`md_device_errors_total{device="rt-1",err="render"} 3`,
+		`md_device_errors_total{device="rt-1",err="fetch"} 1`,
+		`md_device_errors_total{device="rt-1",err="other"} 1`,
+		`md_device_consecutive_errors{device="rt-1"} 2`,
+	} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("metrics missing %s", want)
+		}
+	}
+	s.Ingest("rt-1", Report{}, now.Add(2*time.Hour))
+	if snap, _ := s.Snapshot("rt-1"); snap.ConsecutiveErrors != 0 {
+		t.Fatalf("clean report must reset consecutive errors, got %d", snap.ConsecutiveErrors)
+	}
+}

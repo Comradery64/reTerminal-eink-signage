@@ -110,7 +110,7 @@ func TestPushSubscriptionsFilterByLocation(t *testing.T) {
 	}
 	s.cfg.Store(c)
 	got := map[string]bool{}
-	for _, sub := range s.PushSubscriptions("loc-sf") {
+	for _, sub := range s.PushSubscriptions("loc-sf", false) {
 		got[sub.Endpoint] = true
 	}
 	if len(got) != 2 || !got["https://push.example/b"] || !got["https://push.example/c"] {

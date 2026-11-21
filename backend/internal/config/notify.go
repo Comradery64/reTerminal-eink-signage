@@ -326,6 +326,9 @@ func (c *Config) validateLarkApp() error {
 	if a.LarkFallbackChatID != "" && !strings.HasPrefix(a.LarkFallbackChatID, "oc_") {
 		return fmt.Errorf("alerts.lark_fallback_chat_id must be a Lark chat ID (oc_…)")
 	}
+	if a.LarkAdminChatID != "" && !strings.HasPrefix(a.LarkAdminChatID, "oc_") {
+		return fmt.Errorf("alerts.lark_admin_chat_id must be a Lark chat ID (oc_…)")
+	}
 	if a.LarkFallbackChatID != "" {
 		return nil
 	}

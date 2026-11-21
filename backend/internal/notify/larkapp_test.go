@@ -82,11 +82,13 @@ type routes struct {
 	m        map[string][2]string // location -> {email, chat}
 	mode     map[string]string    // location -> delivery mode ("" = original behaviour)
 	fallback string
+	admin    string
 }
 
 func (r routes) LarkRoute(loc string) (string, string) { v := r.m[loc]; return v[0], v[1] }
 func (r routes) LarkDelivery(loc string) string        { return r.mode[loc] }
 func (r routes) LarkFallbackChat() string              { return r.fallback }
+func (r routes) LarkAdminChat() string                 { return r.admin }
 
 func newTestApp(t *testing.T, f *fakeLark, rt LarkRoutes) (*LarkApp, func()) {
 	ts := httptest.NewServer(f.handler(t))
@@ -322,5 +324,61 @@ func TestLarkAppSendsTitleOnlyMessageWithoutTrailingNewline(t *testing.T) {
 	}
 	if len(f.sent) != 1 || f.sent[0].Text != "✅ Aspen: back online" {
 		t.Fatalf("sent = %+v", f.sent)
+	}
+}
+
+// Operational alerts go to the admin group only; battery alerts keep the office routing.
+func TestLarkAppAdminAlertsGoToAdminChatOnly(t *testing.T) {
+	f := &fakeLark{}
+	rt := routes{m: map[string][2]string{"loc-a": {"a@example.com", "oc_office"}},
+		mode: map[string]string{"loc-a": "both"}, fallback: "oc_fallback", admin: "oc_admin"}
+	app, done := newTestApp(t, f, rt)
+	defer done()
+	if err := app.Send(context.Background(), Message{Title: "offline", Location: "loc-a", Admin: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.sent) != 1 || f.sent[0].ID != "oc_admin" {
+		t.Fatalf("admin alert: want only oc_admin, got %+v", f.sent)
+	}
+	f.sent = nil
+	if err := app.Send(context.Background(), Message{Title: "battery", Location: "loc-a"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range f.sent {
+		if s.ID == "oc_admin" {
+			t.Fatalf("battery alert must not reach the admin group: %+v", f.sent)
+		}
+	}
+	if len(f.sent) != 2 {
+		t.Fatalf("battery alert: want office DM + group (mode both), got %+v", f.sent)
+	}
+}
+
+// A failing admin group falls back to the global fallback group, never an office group or person.
+func TestLarkAppAdminChatFailureUsesFallbackNotOffice(t *testing.T) {
+	f := &fakeLark{rejectChats: map[string]bool{"oc_admin": true}}
+	rt := routes{m: map[string][2]string{"loc-a": {"a@example.com", "oc_office"}},
+		mode: map[string]string{"loc-a": "group"}, fallback: "oc_fallback", admin: "oc_admin"}
+	app, done := newTestApp(t, f, rt)
+	defer done()
+	if err := app.Send(context.Background(), Message{Title: "offline", Location: "loc-a", Admin: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.sent) != 1 || f.sent[0].ID != "oc_fallback" {
+		t.Fatalf("want only oc_fallback after admin chat failed, got %+v", f.sent)
+	}
+}
+
+// No admin group configured: operational alerts keep the location routing (nothing goes silent).
+func TestLarkAppAdminAlertWithoutAdminChatUsesLocation(t *testing.T) {
+	f := &fakeLark{}
+	rt := routes{m: map[string][2]string{"loc-a": {"", "oc_office"}}, mode: map[string]string{"loc-a": "group"}}
+	app, done := newTestApp(t, f, rt)
+	defer done()
+	if err := app.Send(context.Background(), Message{Title: "offline", Location: "loc-a", Admin: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.sent) != 1 || f.sent[0].ID != "oc_office" {
+		t.Fatalf("want oc_office, got %+v", f.sent)
 	}
 }

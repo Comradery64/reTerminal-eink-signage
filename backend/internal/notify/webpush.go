@@ -43,7 +43,9 @@ type PushSubscription struct {
 // no location routing) and is told when the push service reports one gone (404/410), so it can
 // be deleted instead of retried forever.
 type PushSubscriptions interface {
-	PushSubscriptions(location string) []PushSubscription
+	// PushSubscriptions returns the browsers to notify for location; adminOnly limits them to
+	// admin accounts (operational alerts, Message.Admin).
+	PushSubscriptions(location string, adminOnly bool) []PushSubscription
 	RemovePushSubscription(endpoint string)
 }
 
@@ -159,7 +161,7 @@ func (w *WebPush) Send(ctx context.Context, m Message) error {
 // SendReport is Send with the full outcome.
 func (w *WebPush) SendReport(ctx context.Context, m Message) PushReport {
 	payload, _ := json.Marshal(pushPayload{Title: m.Title, Body: m.Text, Tag: m.DeviceID})
-	subs := w.Subs.PushSubscriptions(m.Location)
+	subs := w.Subs.PushSubscriptions(m.Location, m.Admin)
 	r := PushReport{Total: len(subs)}
 	for _, sub := range subs {
 		status, reason, err := w.sendOne(ctx, sub, payload)

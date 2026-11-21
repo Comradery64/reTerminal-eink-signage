@@ -23,6 +23,9 @@ type LarkRoutes interface {
 	LarkDelivery(location string) string
 	// LarkFallbackChat is the global group used when a location's person can't be reached.
 	LarkFallbackChat() string
+	// LarkAdminChat is the admins' group for operational alerts (Message.Admin); "" = none, so
+	// those alerts follow the location routing like every other alert.
+	LarkAdminChat() string
 }
 
 // LarkApp sends alerts as a Lark custom app (Open Platform), because custom-bot webhooks aren't
@@ -77,12 +80,22 @@ func (l *LarkApp) Send(ctx context.Context, m Message) error {
 		}
 		return err == nil
 	}
-	switch mode {
-	case "group":
+	adminChat := ""
+	if m.Admin && l.Routes != nil {
+		adminChat = l.Routes.LarkAdminChat()
+	}
+	switch {
+	case adminChat != "":
+		// Operational alerts go to the admins' group only, never an office group or a person; if
+		// that send fails they fall through to the global fallback group below.
+		if try("chat_id", adminChat) {
+			return nil
+		}
+	case mode == "group":
 		if try("chat_id", chat) {
 			return nil
 		}
-	case "both":
+	case mode == "both":
 		dm, grp := try("email", email), try("chat_id", chat)
 		if dm || grp {
 			return nil // one delivered; the other's failure is the caller's to log if it wants

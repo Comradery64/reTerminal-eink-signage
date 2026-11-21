@@ -76,6 +76,10 @@ alerts:
   #   app_secret: "${LARK_APP_SECRET}"                  # a secret
   #   # base_url defaults to https://open.larksuite.com/open-apis (Feishu: https://open.feishu.cn/open-apis)
   # lark_fallback_chat_id: "oc_xxxxxxxx"  # group used ONLY when a location's person can't be reached
+  # lark_admin_chat_id: "oc_xxxxxxxx"     # admins' group: offline / back online / "not updating" alerts go
+  #                                       # ONLY here; office groups then get battery news only. Unset = all
+  #                                       # alerts follow the location routing. Web push: admins only.
+  # offline_min_silence: 30m              # shortest silence that counts as offline (default: two missed check-ins)
   # webpush:
   #   vapid_public_key: "${WEBPUSH_VAPID_PUBLIC_KEY}"    # base64url, 65-byte P-256 point
   #   vapid_private_key: "${WEBPUSH_VAPID_PRIVATE_KEY}"  # base64url, 32-byte scalar — a secret

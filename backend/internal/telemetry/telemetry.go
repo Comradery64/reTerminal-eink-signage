@@ -46,7 +46,13 @@ type state struct {
 	// "last seen" against the NEW sleep during that gap made a display look 60 minutes overdue
 	// against a 10-minute cycle at every 09:00 switch from the hourly to the business-hours cadence.
 	pendingWake uint32
-	reported    bool // true once Ingest has been called at least once (firmware telemetry
+	// consecutiveErrors counts reports in a row that carried an err code (reset by a clean report);
+	// errCounts is every err code this device has reported since start. Without these a unit can fail
+	// every repaint for weeks while the dashboards show it as healthy (2026-11: 293 render errors,
+	// none visible anywhere until someone saw a washed-out panel).
+	consecutiveErrors int
+	errCounts         map[string]int
+	reported          bool // true once Ingest has been called at least once (firmware telemetry
 	// received) — distinct from having a roomStatus, which SetRoomStatus sets independently and
 	// much earlier (as soon as the poller can compute a schedule, before any device has ever
 	// phoned home). Without this, a device that's only ever gotten a room-status update — the
@@ -143,8 +149,16 @@ func (s *Store) Ingest(deviceID string, r Report, now time.Time) {
 	if st.pendingWake > 0 {
 		expected = st.pendingWake // this wake's report is in: the sleep it was sent now applies
 	}
+	consecutive, counts := 0, st.errCounts
+	if code := ErrLabel(r.ErrCode); code != "" {
+		consecutive = st.consecutiveErrors + 1
+		if counts == nil {
+			counts = map[string]int{}
+		}
+		counts[code]++
+	}
 	*st = state{last: r, lastSeen: now, lastRendered: lastRendered, roomStatus: st.roomStatus,
-		expectedWake: expected, reported: true}
+		expectedWake: expected, reported: true, consecutiveErrors: consecutive, errCounts: counts}
 	s.mu.Unlock()
 
 	// Disk I/O must never happen under the fleet-wide RWMutex above, and must never block this
@@ -303,10 +317,11 @@ func (s *Store) SetExpectedWake(deviceID string, seconds uint32) {
 // Snapshot is a point-in-time read of one device's telemetry, for consumers that need
 // structured access (e.g. the status endpoint) rather than /metrics' exposition text.
 type Snapshot struct {
-	Report       Report
-	LastSeen     time.Time
-	LastRendered time.Time // zero if the device has never reported rendered=true
-	ExpectedWake uint32    // last clamped sleep sent to the device; 0 if unknown since restart
+	Report            Report
+	LastSeen          time.Time
+	LastRendered      time.Time // zero if the device has never reported rendered=true
+	ExpectedWake      uint32    // last clamped sleep sent to the device; 0 if unknown since restart
+	ConsecutiveErrors int       // reports in a row with an err code; 0 after a clean report
 }
 
 func (s *Store) Snapshot(deviceID string) (Snapshot, bool) {
@@ -316,7 +331,8 @@ func (s *Store) Snapshot(deviceID string) (Snapshot, bool) {
 	if !ok || !st.reported {
 		return Snapshot{}, false
 	}
-	return Snapshot{Report: st.last, LastSeen: st.lastSeen, LastRendered: st.lastRendered, ExpectedWake: st.expectedWake}, true
+	return Snapshot{Report: st.last, LastSeen: st.lastSeen, LastRendered: st.lastRendered, ExpectedWake: st.expectedWake,
+		ConsecutiveErrors: st.consecutiveErrors}, true
 }
 
 // WriteMetrics emits Prometheus exposition text.
@@ -376,6 +392,26 @@ func (s *Store) WriteMetrics(w io.Writer, now time.Time) {
 		}
 	}
 
+	// Device-reported failures (the report's err code: "render" = panel refresh timed out, "fetch",
+	// "badpayload", ...). Counter since broker start, plus the current run of failing reports.
+	fmt.Fprintln(w, "# HELP md_device_errors_total Reports carrying this err code since broker start.")
+	fmt.Fprintln(w, "# TYPE md_device_errors_total counter")
+	for _, id := range ids {
+		codes := make([]string, 0, len(s.m[id].errCounts))
+		for c := range s.m[id].errCounts {
+			codes = append(codes, c)
+		}
+		sort.Strings(codes)
+		for _, c := range codes {
+			fmt.Fprintf(w, "md_device_errors_total{device=%q,err=%q} %d\n", id, c, s.m[id].errCounts[c])
+		}
+	}
+	fmt.Fprintln(w, "# HELP md_device_consecutive_errors Reports in a row that carried an err code (0 = last report was clean).")
+	fmt.Fprintln(w, "# TYPE md_device_consecutive_errors gauge")
+	for _, id := range ids {
+		fmt.Fprintf(w, "md_device_consecutive_errors{device=%q} %d\n", id, s.m[id].consecutiveErrors)
+	}
+
 	// Room environment (only for devices whose SHT4x reported this cycle).
 	fmt.Fprintln(w, "# HELP md_room_temp_celsius Room temperature from the on-board SHT4x.")
 	fmt.Fprintln(w, "# TYPE md_room_temp_celsius gauge")
@@ -429,4 +465,22 @@ func emitGauge(w io.Writer, ids []string, m map[string]*state, name, help string
 	for _, id := range ids {
 		fmt.Fprintf(w, "%s{device=%q}%g\n", name, id, f(m[id].last))
 	}
+}
+
+// ErrLabel normalises a device-reported err code for use as a metric label and alert key: the
+// firmware sends short lowercase codes ("render", "fetch", ...); anything else becomes "other" so a
+// misbehaving device can't mint unbounded label values. "" means no error.
+func ErrLabel(code string) string {
+	if code == "" {
+		return ""
+	}
+	if len(code) > 16 {
+		return "other"
+	}
+	for _, c := range code {
+		if (c < 'a' || c > 'z') && c != '_' {
+			return "other"
+		}
+	}
+	return code
 }

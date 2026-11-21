@@ -263,7 +263,7 @@ func TestPushLimitedToTheirLocations(t *testing.T) {
 	s.cfg.Store(c)
 	setUserLocations(s, testManagerUsername, []string{"loc-sf"})
 	has := func(loc, endpoint string) bool {
-		for _, sub := range s.PushSubscriptions(loc) {
+		for _, sub := range s.PushSubscriptions(loc, false) {
 			if sub.Endpoint == endpoint {
 				return true
 			}

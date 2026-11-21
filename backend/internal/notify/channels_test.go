@@ -79,7 +79,7 @@ type memSubs struct {
 	removed []string
 }
 
-func (m *memSubs) PushSubscriptions(string) []PushSubscription {
+func (m *memSubs) PushSubscriptions(string, bool) []PushSubscription {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]PushSubscription(nil), m.subs...)
@@ -278,7 +278,7 @@ func TestWebPushReportsStatusAndFailsWhenNothingDelivered(t *testing.T) {
 			t.Errorf("error leaks %q: %s", leak, msg)
 		}
 	}
-	if (&memSubs{}).PushSubscriptions("") == nil && wp.SendReport(context.Background(), Message{}).Total != 1 {
+	if (&memSubs{}).PushSubscriptions("", false) == nil && wp.SendReport(context.Background(), Message{}).Total != 1 {
 		t.Error("report total wrong")
 	}
 	empty := NewWebPush(testVAPID(t), "mailto:ops@example.com", &memSubs{})
@@ -309,5 +309,54 @@ func TestWebPushKeepsJustCreatedSubscriptionOnGone(t *testing.T) {
 	}
 	if !strings.Contains(logBuf.String(), "level=ERROR") || !strings.Contains(logBuf.String(), "status=410") {
 		t.Errorf("keeping a just-created subscription must be logged loudly with the status:\n%s", logBuf.String())
+	}
+}
+
+// Device errors: silent below the threshold, one admin alert at it, no repeat while still failing,
+// one "updating again" on the first clean report. Offline/recovered are admin alerts too.
+func TestEvaluateDeviceErrorHysteresis(t *testing.T) {
+	cn := &countingNotifier{}
+	m := NewManagerWith(cn, 45, 55, 24*time.Hour, quietLog())
+	t0 := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	steps := []struct {
+		err         string
+		consecutive int
+		want        StaleEvent
+	}{
+		{"", 0, StaleNone},
+		{"render", 1, StaleNone},
+		{"render", 2, StaleNone},
+		{"render", 3, StaleOffline}, // threshold reached
+		{"render", 4, StaleNone},    // still failing, inside renotify: silent
+		{"", 0, StaleRecovered},
+		{"", 0, StaleNone},
+	}
+	for i, s := range steps {
+		if got := m.EvaluateDeviceError("rt-a", "A", s.err, s.consecutive, t0.Add(time.Duration(i)*10*time.Minute)); got != s.want {
+			t.Errorf("step %d (err=%q x%d): got %v, want %v", i, s.err, s.consecutive, got, s.want)
+		}
+	}
+	m.EvaluateStale("rt-b", "B", true, time.Hour, t0)
+	m.EvaluateBattery("rt-c", "C", 40, 3500, t0)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		cn.mu.Lock()
+		n := len(cn.msgs)
+		cn.mu.Unlock()
+		if n == 4 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cn.mu.Lock()
+	defer cn.mu.Unlock()
+	if len(cn.msgs) != 4 {
+		t.Fatalf("want 4 messages (error, cleared, offline, battery), got %d", len(cn.msgs))
+	}
+	for _, msg := range cn.msgs {
+		isBattery := strings.Contains(msg.Title, "battery")
+		if msg.Admin == isBattery {
+			t.Errorf("%q: Admin=%v, want %v (battery news is for the offices, the rest for admins)", msg.Title, msg.Admin, !isBattery)
+		}
 	}
 }
